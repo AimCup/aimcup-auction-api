@@ -317,11 +317,11 @@ public class AuctionAdminService implements AuctionAdminUseCase {
 
     private Mono<Void> importRow(Auction auction, ImportPlayerRow row, int line, int maxLen,
                                  List<Player> imported, List<ImportPlayersResult.RowError> errors) {
-        if (row.username() == null || row.username().isBlank()) {
+        if (isBlank(row.username())) {
             errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "username is required"));
             return Mono.empty();
         }
-        if (row.osuId() == null || row.osuId().isBlank()) {
+        if (isBlank(row.osuId())) {
             errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "osuId is required"));
             return Mono.empty();
         }
@@ -332,18 +332,43 @@ public class AuctionAdminService implements AuctionAdminUseCase {
             errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "osuId must be numeric"));
             return Mono.empty();
         }
+        if (isBlank(row.qualificationRank())) {
+            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "qualificationRank is required"));
+            return Mono.empty();
+        }
+        int qualificationRank;
+        try {
+            qualificationRank = Integer.parseInt(row.qualificationRank().trim());
+        } catch (NumberFormatException e) {
+            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(),
+                    "qualificationRank must be a whole number"));
+            return Mono.empty();
+        }
         if (row.description() != null && row.description().length() > maxLen) {
             errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(),
                     "description exceeds " + maxLen + " characters"));
+            return Mono.empty();
+        }
+        Double bestAccuracy;
+        Double worstAccuracy;
+        try {
+            bestAccuracy = parseOptionalAccuracy(row.bestBeatmapAccuracy());
+            worstAccuracy = parseOptionalAccuracy(row.worstBeatmapAccuracy());
+        } catch (NumberFormatException e) {
+            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(),
+                    "accuracy must be a number"));
             return Mono.empty();
         }
         if (auction.findPlayerByOsuId(osuId).isPresent()) {
             errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "already in the auction"));
             return Mono.empty();
         }
+        AddPlayerCommand command = new AddPlayerCommand(osuId, row.description(),
+                blankToNull(row.bestBeatmapUrl()), bestAccuracy,
+                blankToNull(row.worstBeatmapUrl()), worstAccuracy, qualificationRank);
         return osuApi.fetchUser(osuId)
-                .doOnNext(profile -> {
-                    Player player = playerFromProfile(profile, row.description());
+                .flatMap(profile -> enrichWithQualifiers(playerFromProfile(profile, row.description()), command))
+                .doOnNext(player -> {
                     auction.getPlayers().add(player);
                     imported.add(player);
                 })
@@ -353,6 +378,18 @@ public class AuctionAdminService implements AuctionAdminUseCase {
                     return Mono.empty();
                 })
                 .then();
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /** Parses an optional accuracy cell; null/blank ⇒ null, otherwise a double (throws if not numeric). */
+    private static Double parseOptionalAccuracy(String value) {
+        if (isBlank(value)) {
+            return null;
+        }
+        return Double.parseDouble(value.trim());
     }
 
     private Player playerFromProfile(OsuUserProfile profile, String description) {

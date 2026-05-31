@@ -6,9 +6,11 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Minimal CSV reader for player imports. Expects columns in the order {@code username, osuId,
- * description}; a header row (detected by the literal column names) is skipped. The description is
- * the remainder of the line so it may itself contain commas.
+ * CSV reader for player imports. Expects columns in the order
+ * {@code username, osuId, description, qualificationRank, bestBeatmapUrl, bestBeatmapAccuracy,
+ * worstBeatmapUrl, worstBeatmapAccuracy}; a header row (detected by the literal column names) is
+ * skipped. Fields may be quoted (RFC&nbsp;4180 style) so a description can itself contain commas;
+ * {@code ""} inside a quoted field is an escaped quote.
  */
 public final class CsvPlayerParser {
 
@@ -23,31 +25,56 @@ public final class CsvPlayerParser {
         String[] lines = csv.replace("\r\n", "\n").replace("\r", "\n").split("\n");
         boolean first = true;
         for (String raw : lines) {
-            String line = raw.strip();
-            if (line.isEmpty()) {
+            if (raw.strip().isEmpty()) {
                 continue;
             }
             if (first) {
                 first = false;
-                String lower = line.toLowerCase();
-                if (lower.contains("osuid") || lower.startsWith("username")) {
+                String lower = raw.strip().toLowerCase();
+                if (lower.startsWith("username") || lower.contains("osuid")) {
                     continue; // header row
                 }
             }
-            String[] parts = line.split(",", 3);
-            String username = parts.length > 0 ? unquote(parts[0]) : null;
-            String osuId = parts.length > 1 ? unquote(parts[1]) : null;
-            String description = parts.length > 2 ? unquote(parts[2]) : "";
-            rows.add(new ImportPlayerRow(username, osuId, description));
+            List<String> f = splitCsvLine(raw);
+            rows.add(new ImportPlayerRow(
+                    field(f, 0), field(f, 1), field(f, 2), field(f, 3),
+                    field(f, 4), field(f, 5), field(f, 6), field(f, 7)));
         }
         return rows;
     }
 
-    private static String unquote(String value) {
-        String trimmed = value.strip();
-        if (trimmed.length() >= 2 && trimmed.startsWith("\"") && trimmed.endsWith("\"")) {
-            trimmed = trimmed.substring(1, trimmed.length() - 1).replace("\"\"", "\"");
+    private static String field(List<String> fields, int index) {
+        return index < fields.size() ? fields.get(index).strip() : "";
+    }
+
+    /** Splits a single CSV line into fields, honouring double-quoted fields and {@code ""} escapes. */
+    private static List<String> splitCsvLine(String line) {
+        List<String> out = new ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        boolean inQuotes = false;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (inQuotes) {
+                if (c == '"') {
+                    if (i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                        cur.append('"');
+                        i++;
+                    } else {
+                        inQuotes = false;
+                    }
+                } else {
+                    cur.append(c);
+                }
+            } else if (c == '"') {
+                inQuotes = true;
+            } else if (c == ',') {
+                out.add(cur.toString());
+                cur.setLength(0);
+            } else {
+                cur.append(c);
+            }
         }
-        return trimmed;
+        out.add(cur.toString());
+        return out;
     }
 }
