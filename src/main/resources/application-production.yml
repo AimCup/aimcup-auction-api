@@ -1,4 +1,4 @@
-# Production profile (api.auction.aimcup.xyz). Only non-secret, environment-specific config lives
+# Production profile (auction-api.aimcup.xyz). Only non-secret, environment-specific config lives
 # here; secrets (OSU_CLIENT_SECRET, AUCTION_JWT_SECRET, DISCORD_BOT_TOKEN, OSU_API_CLIENT_*,
 # MongoDB credentials) are supplied at runtime via environment variables — see auction-todo-by-me.md.
 spring:
@@ -20,4 +20,4 @@ auction:
   osu:
     # OAuth2 client id is public; the matching client secret comes from OSU_CLIENT_SECRET.
     client-id: ${OSU_CLIENT_ID:58581}
-    redirect-uri: https://api.auction.aimcup.xyz/oauth2/callback/osu
+    redirect-uri: https://auction-api.aimcup.xyz/oauth2/callback/osu

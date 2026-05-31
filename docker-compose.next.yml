@@ -1,4 +1,4 @@
-# Test ("next") stack for next.api.auction.aimcup.xyz.
+# Test ("next") stack for api-next-auction.aimcup.xyz.
 # MongoDB and Redis are internal-only; the API is published on host port 8091 -> container 8080.
 services:
 

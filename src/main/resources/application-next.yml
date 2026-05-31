@@ -1,4 +1,4 @@
-# Test ("next") profile (next.api.auction.aimcup.xyz). Only non-secret, environment-specific config
+# Test ("next") profile (api-next-auction.aimcup.xyz). Only non-secret, environment-specific config
 # lives here; secrets are supplied at runtime via environment variables — see auction-todo-by-me.md.
 spring:
   graphql:
@@ -11,8 +11,8 @@ server:
   forward-headers-strategy: framework
 
 auction:
-  frontend-url: https://next.auction.aimcup.xyz
-  cors-allowed-origins: https://next.auction.aimcup.xyz
+  frontend-url: https://auction-next.aimcup.xyz
+  cors-allowed-origins: https://auction-next.aimcup.xyz
   security:
     # Test convenience: every signed-in osu! user may create auctions. Set AUCTION_DEV_GRANT_ADMIN=false
     # (and AUCTION_ADMIN_OSU_IDS) to lock it down.
@@ -20,4 +20,4 @@ auction:
   osu:
     # OAuth2 client id is public; the matching client secret comes from OSU_CLIENT_SECRET.
     client-id: ${OSU_CLIENT_ID:58580}
-    redirect-uri: https://next.api.auction.aimcup.xyz/oauth2/callback/osu
+    redirect-uri: https://api-next-auction.aimcup.xyz/oauth2/callback/osu

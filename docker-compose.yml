@@ -1,4 +1,4 @@
-# Production stack for api.auction.aimcup.xyz.
+# Production stack for auction-api.aimcup.xyz.
 # MongoDB and Redis are only reachable on the internal aimcup-network (no published host ports).
 # Only the API is published, on host port 8090 -> container 8080. Point Nginx Proxy Manager at it.
 services:
