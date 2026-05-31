@@ -1,0 +1,74 @@
+spring:
+  application:
+    name: aimcup-auction-api
+  # When no profile is set (local run), default to `dev`, which loads the gitignored
+  # application-dev.yml holding local secrets. Deployment overrides this with `production`/`next`.
+  profiles:
+    default: dev
+  data:
+    mongodb:
+      uri: ${SPRING_DATA_MONGODB_URI:mongodb://root:password@localhost:11002/auction?authSource=admin}
+      auto-index-creation: true
+    redis:
+      host: ${SPRING_DATA_REDIS_HOST:localhost}
+      port: ${SPRING_DATA_REDIS_PORT:6380}
+  graphql:
+    graphiql:
+      enabled: true
+    path: /graphql
+    websocket:
+      path: /graphql
+    schema:
+      printer:
+        enabled: true
+  jackson:
+    deserialization:
+      fail-on-unknown-properties: false
+    default-property-inclusion: non_null
+
+server:
+  port: ${SERVER_PORT:8080}
+
+logging:
+  level:
+    xyz.aimcup.auction: INFO
+    discord4j: WARN
+
+auction:
+  frontend-url: ${AUCTION_FRONTEND_URL:http://localhost:3000}
+  cors-allowed-origins: ${AUCTION_CORS_ORIGINS:http://localhost:3000,http://localhost:3001}
+  jwt:
+    # Secret is NOT committed: provided by AUCTION_JWT_SECRET (deployment) or application-dev.yml (local).
+    secret: ${AUCTION_JWT_SECRET:}
+    expiration-ms: 86400000
+  security:
+    # Local development convenience: every authenticated osu! user is treated as ROLE_ADMIN
+    # so they can create auctions. Set false in production and use admin-osu-ids instead.
+    dev-grant-admin: ${AUCTION_DEV_GRANT_ADMIN:true}
+    admin-osu-ids: ${AUCTION_ADMIN_OSU_IDS:}
+  osu:
+    # osu! OAuth2 (authorization code). The client id is public; the secret is NOT committed —
+    # provided by OSU_CLIENT_SECRET (deployment) or application-dev.yml (local).
+    client-id: ${OSU_CLIENT_ID:32851}
+    client-secret: ${OSU_CLIENT_SECRET:}
+    authorization-uri: https://osu.ppy.sh/oauth/authorize
+    token-uri: https://osu.ppy.sh/oauth/token
+    user-info-uri: https://osu.ppy.sh/api/v2/me
+    # Must exactly match a redirect URI registered on the osu! application.
+    redirect-uri: ${OSU_REDIRECT_URI:http://localhost:8080/oauth2/callback/osu}
+    scopes: identify public
+    # Client-credentials app used to look up arbitrary users by id (players / managers).
+    api:
+      client-id: ${OSU_API_CLIENT_ID:9552}
+      # Secret is NOT committed: provided by OSU_API_CLIENT_SECRET (deployment) or application-dev.yml (local).
+      client-secret: ${OSU_API_CLIENT_SECRET:}
+      base-url: https://osu.ppy.sh/api/v2
+  discord:
+    enabled: ${AUCTION_DISCORD_ENABLED:true}
+    # Token is NOT committed: provided by DISCORD_BOT_TOKEN (deployment) or application-dev.yml (local).
+    # Blank ⇒ Discord integration is simply disabled.
+    bot-token: ${DISCORD_BOT_TOKEN:}
+    # Relays linked-channel messages to the stream overlay. Requires the privileged MESSAGE_CONTENT
+    # intent — also enable it for the bot in the Discord developer portal. Set false if the bot is
+    # not authorised for it, otherwise the gateway connection is rejected.
+    message-content-intent: ${AUCTION_DISCORD_MESSAGE_CONTENT:true}

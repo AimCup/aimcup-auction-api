@@ -1,0 +1,16 @@
+target/
+.git/
+.github/
+.idea/
+*.iml
+*.iws
+*.ipr
+docs/
+*.md
+.mvn/wrapper/maven-wrapper.jar
+docker-compose*.yml
+*.Dockerfile
+.dockerignore
+.gitignore
+# Never bake local dev secrets into the image (deployment uses the production/next profile + env).
+src/main/resources/application-dev.yml

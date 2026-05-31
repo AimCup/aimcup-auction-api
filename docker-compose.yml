@@ -1,0 +1,63 @@
+# Production stack for api.auction.aimcup.xyz.
+# MongoDB and Redis are only reachable on the internal aimcup-network (no published host ports).
+# Only the API is published, on host port 8090 -> container 8080. Point Nginx Proxy Manager at it.
+services:
+
+  aimcup-auction-mongo:
+    container_name: aimcup-auction-mongo
+    image: mongo:7
+    restart: always
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USERNAME:-root}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - aimcup-auction-mongo-data:/data/db
+    networks:
+      - default
+
+  aimcup-auction-redis:
+    container_name: aimcup-auction-redis
+    image: redis:7
+    restart: always
+    networks:
+      - default
+
+  aimcup-auction-api:
+    container_name: aimcup-auction-api
+    depends_on:
+      aimcup-auction-mongo:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: ./build.Dockerfile
+    restart: always
+    environment:
+      - SPRING_DATA_MONGODB_URI=mongodb://${MONGO_USERNAME:-root}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@aimcup-auction-mongo:27017/auction?authSource=admin
+      - SPRING_DATA_REDIS_HOST=aimcup-auction-redis
+      - SPRING_DATA_REDIS_PORT=6379
+      # --- secrets / env-specific, injected by the deploy workflow or Portainer (never committed) ---
+      - OSU_CLIENT_ID=${OSU_CLIENT_ID:-58581}
+      - OSU_CLIENT_SECRET=${OSU_CLIENT_SECRET}
+      - OSU_API_CLIENT_ID=${OSU_API_CLIENT_ID}
+      - OSU_API_CLIENT_SECRET=${OSU_API_CLIENT_SECRET}
+      - AUCTION_JWT_SECRET=${AUCTION_JWT_SECRET}
+      - DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}
+      - AUCTION_DISCORD_MESSAGE_CONTENT=${AUCTION_DISCORD_MESSAGE_CONTENT:-true}
+      - AUCTION_ADMIN_OSU_IDS=${AUCTION_ADMIN_OSU_IDS}
+    ports:
+      - "8090:8080"
+    networks:
+      - default
+
+volumes:
+  aimcup-auction-mongo-data:
+
+networks:
+  default:
+    external: true
+    name: aimcup-network

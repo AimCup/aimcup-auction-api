@@ -1,0 +1,26 @@
+services:
+  auction-mongo:
+    image: mongo:7
+    container_name: auction-mongo
+    restart: unless-stopped
+    ports:
+      - "11002:27017"
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=password
+    volumes:
+      - auction-mongo-data:/data/db
+
+  auction-redis:
+    image: redis:7
+    container_name: auction-redis
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    command: [ "redis-server", "--appendonly", "yes" ]
+    volumes:
+      - auction-redis-data:/data
+
+volumes:
+  auction-mongo-data:
+  auction-redis-data:

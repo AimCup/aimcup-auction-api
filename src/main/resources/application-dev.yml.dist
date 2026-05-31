@@ -1,0 +1,28 @@
+# Template for local development secrets.
+# Copy this to `application-dev.yml` (which is gitignored) and fill in real values:
+#   cp src/main/resources/application-dev.yml.dist src/main/resources/application-dev.yml
+# The `dev` profile is the default for local runs, so this file is picked up automatically.
+spring:
+  data:
+    mongodb:
+      uri: mongodb://root:password@localhost:11002/auction?authSource=admin
+    redis:
+      host: localhost
+      port: 6380
+
+auction:
+  jwt:
+    # Any string of at least 32 bytes (HS256). Generate one with: openssl rand -base64 48
+    secret: CHANGE_ME_local_dev_only_at_least_32_bytes_long
+  osu:
+    # osu! OAuth2 (authorization code) app secret.
+    client-secret: YOUR_OSU_OAUTH_CLIENT_SECRET
+    api:
+      # osu! API (client-credentials) app secret, used to look up users/beatmaps by id.
+      client-secret: YOUR_OSU_API_CLIENT_SECRET
+  discord:
+    enabled: true
+    # Discord bot token (leave blank to disable Discord locally).
+    bot-token: YOUR_DISCORD_BOT_TOKEN
+  security:
+    dev-grant-admin: true

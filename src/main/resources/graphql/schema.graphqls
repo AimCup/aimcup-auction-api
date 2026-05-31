@@ -1,0 +1,288 @@
+# ===========================================================================================
+#  aimcup auction GraphQL schema
+#  Timestamps are ISO-8601 strings; ids are strings (UUIDs). Large numbers (epoch millis,
+#  version counters) use Float to stay within range; everything else is Int.
+# ===========================================================================================
+
+enum AuctionState { SCHEDULED RUNNING PAUSED FINISHED }
+enum PlayerStatus { AVAILABLE SOLD UNSOLD }
+enum AuctionPhase { WAITING_TO_START BIDDING GAP PAUSED FINISHED }
+
+type AuctionSettings {
+    startingBalance: Int!
+    maxBid: Int!
+    minIncrement: Int!
+    teamSizeForPercentLimit: Int!
+    maxBidPercent: Int!
+    maxDescriptionLength: Int!
+}
+
+type AuctionStage {
+    index: Int!
+    biddingTimeSeconds: Int!
+    biddingTimeAfterBidSeconds: Int!
+    gapTimeSeconds: Int!
+}
+
+type Manager {
+    id: ID!
+    osuId: Int!
+    username: String
+    avatarUrl: String
+    countryCode: String
+    discordId: String
+    owner: Boolean!
+    addedAt: String
+}
+
+type Player {
+    id: ID!
+    osuId: Int!
+    username: String
+    avatarUrl: String
+    bannerUrl: String
+    countryCode: String
+    globalRank: Int
+    countryRank: Int
+    description: String
+    captain: Boolean!
+    discordId: String
+    status: PlayerStatus!
+    soldToCaptainId: ID
+    soldPrice: Int
+    qualificationRank: Int
+    bestMapName: String
+    bestMapImage: String
+    bestMapAccuracy: Float
+    worstMapName: String
+    worstMapImage: String
+    worstMapAccuracy: Float
+}
+
+type Captain {
+    id: ID!
+    playerId: ID!
+    osuId: Int!
+    username: String
+    avatarUrl: String
+    countryCode: String
+    discordId: String
+    balance: Int!
+    ready: Boolean!
+    teamPlayerIds: [ID!]!
+}
+
+type BidEvent {
+    captainId: ID
+    captainUsername: String
+    captainAvatarUrl: String
+    amount: Int!
+    at: String
+    maxBid: Boolean!
+    source: String
+}
+
+type Auction {
+    id: ID!
+    name: String!
+    banner: String
+    creatorOsuId: Int!
+    state: AuctionState!
+    startAt: String
+    createdAt: String
+    startedAt: String
+    finishedAt: String
+    guildId: String
+    channelId: String
+    settings: AuctionSettings!
+    stages: [AuctionStage!]!
+    managers: [Manager!]!
+    players: [Player!]!
+    captains: [Captain!]!
+    currentStageIndex: Int!
+}
+
+type LiveAuctionState {
+    auctionId: ID!
+    state: AuctionState!
+    phase: AuctionPhase!
+    stageIndex: Int!
+    totalStages: Int!
+    currentPlayer: Player
+    highestBid: Int!
+    highestBidderId: ID
+    highestBidderUsername: String
+    bidHistory: [BidEvent!]!
+    phaseEndsAtEpochMs: Float!
+    pausedByOrganizer: Boolean!
+    message: String
+    captains: [Captain!]!
+    players: [Player!]!
+    onlineOsuIds: [Int!]!
+    remainingCount: Int!
+    soldCount: Int!
+    unsoldCount: Int!
+    version: Float!
+}
+
+type User {
+    id: ID
+    osuId: Int!
+    username: String
+    avatarUrl: String
+    countryCode: String
+    globalRank: Int
+    countryRank: Int
+    admin: Boolean!
+}
+
+type ImportError {
+    line: Int!
+    osuId: String
+    username: String
+    reason: String!
+}
+
+type ImportResult {
+    imported: [Player!]!
+    errors: [ImportError!]!
+}
+
+type BidResult {
+    accepted: Boolean!
+    message: String!
+    currentHighest: Int!
+}
+
+type ReadyResult {
+    ready: Boolean!
+    readyCount: Int!
+    totalCaptains: Int!
+}
+
+type ChatMessage {
+    author: String!
+    content: String!
+    avatarUrl: String
+    at: String
+    embed: ChatEmbed
+}
+
+type ChatEmbed {
+    color: String
+    authorName: String
+    authorIcon: String
+    title: String
+    description: String
+    fields: [ChatEmbedField!]!
+    thumbnail: String
+    image: String
+    footer: String
+    footerIcon: String
+    timestamp: String
+}
+
+type ChatEmbedField {
+    name: String!
+    value: String!
+    inline: Boolean!
+}
+
+# ---- Inputs --------------------------------------------------------------------------------
+
+input CreateAuctionInput {
+    name: String!
+    startAt: String
+}
+
+input AuctionSettingsInput {
+    startingBalance: Int!
+    maxBid: Int!
+    minIncrement: Int!
+    teamSizeForPercentLimit: Int!
+    maxBidPercent: Int!
+    maxDescriptionLength: Int!
+}
+
+input StageInput {
+    biddingTimeSeconds: Int!
+    biddingTimeAfterBidSeconds: Int!
+    gapTimeSeconds: Int!
+}
+
+input UpdateMetaInput {
+    name: String
+    banner: String
+    guildId: String
+    channelId: String
+    startAt: String
+}
+
+input AddManagerInput {
+    osuId: Int!
+    discordId: String
+}
+
+input AddPlayerInput {
+    osuId: Int!
+    description: String
+    bestBeatmapUrl: String
+    bestAccuracy: Float
+    worstBeatmapUrl: String
+    worstAccuracy: Float
+    qualificationRank: Int
+}
+
+input FlagCaptainInput {
+    playerId: ID!
+    discordId: String!
+}
+
+input ChangeBalanceInput {
+    captainId: ID!
+    balance: Int!
+}
+
+# ---- Operations ----------------------------------------------------------------------------
+
+type Query {
+    me: User
+    auction(id: ID!): Auction
+    myAuctions: [Auction!]!
+    recentAuctions(limit: Int): [Auction!]!
+    liveState(auctionId: ID!): LiveAuctionState
+}
+
+type Mutation {
+    createAuction(input: CreateAuctionInput!): Auction!
+
+    updateAuctionSettings(auctionId: ID!, input: AuctionSettingsInput!): Auction!
+    updateAuctionStages(auctionId: ID!, stages: [StageInput!]!): Auction!
+    updateAuctionMeta(auctionId: ID!, input: UpdateMetaInput!): Auction!
+    deleteAuction(auctionId: ID!): Boolean!
+
+    addManager(auctionId: ID!, input: AddManagerInput!): Manager!
+    removeManager(auctionId: ID!, managerId: ID!): Boolean!
+
+    addPlayer(auctionId: ID!, input: AddPlayerInput!): Player!
+    importPlayers(auctionId: ID!, csv: String!): ImportResult!
+    removePlayer(auctionId: ID!, playerId: ID!): Boolean!
+    setCaptain(auctionId: ID!, input: FlagCaptainInput!): Player!
+    unsetCaptain(auctionId: ID!, playerId: ID!): Player!
+
+    startAuction(auctionId: ID!): Boolean!
+    pauseAuction(auctionId: ID!): Boolean!
+    resumeAuction(auctionId: ID!): Boolean!
+    removePlayerFromTeam(auctionId: ID!, playerId: ID!): Boolean!
+    changeCaptainBalance(auctionId: ID!, input: ChangeBalanceInput!): Boolean!
+
+    placeBid(auctionId: ID!, amount: Int!): BidResult!
+    placeMaxBid(auctionId: ID!): BidResult!
+
+    setCaptainReady(auctionId: ID!, ready: Boolean!): ReadyResult!
+}
+
+type Subscription {
+    liveAuction(auctionId: ID!): LiveAuctionState!
+    auctionChat(auctionId: ID!): ChatMessage!
+}

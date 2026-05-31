@@ -1,0 +1,23 @@
+# Production profile (api.auction.aimcup.xyz). Only non-secret, environment-specific config lives
+# here; secrets (OSU_CLIENT_SECRET, AUCTION_JWT_SECRET, DISCORD_BOT_TOKEN, OSU_API_CLIENT_*,
+# MongoDB credentials) are supplied at runtime via environment variables — see auction-todo-by-me.md.
+spring:
+  graphql:
+    graphiql:
+      # No interactive playground exposed in production.
+      enabled: false
+
+server:
+  # Behind Nginx Proxy Manager (TLS terminated there); honour X-Forwarded-* headers.
+  forward-headers-strategy: framework
+
+auction:
+  frontend-url: https://auction.aimcup.xyz
+  cors-allowed-origins: https://auction.aimcup.xyz
+  security:
+    # Production: only the listed osu! ids may create auctions (set AUCTION_ADMIN_OSU_IDS).
+    dev-grant-admin: false
+  osu:
+    # OAuth2 client id is public; the matching client secret comes from OSU_CLIENT_SECRET.
+    client-id: ${OSU_CLIENT_ID:58581}
+    redirect-uri: https://api.auction.aimcup.xyz/oauth2/callback/osu

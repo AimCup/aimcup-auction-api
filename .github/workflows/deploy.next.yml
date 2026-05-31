@@ -1,0 +1,50 @@
+name: Check and deploy to Next
+
+on:
+  push:
+    branches: [ "next" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Make Maven wrapper executable
+        run: chmod +x ./mvnw
+
+      - name: Maven verify
+        run: ./mvnw --batch-mode --no-transfer-progress verify -DskipTests
+
+      - name: Prepare next stack
+        run: |
+          docker compose -p aimcup-auction-api-next -f docker-compose.next.yml down --remove-orphans || true
+          # Fixed container_names from earlier deploys can block compose up.
+          docker rm -f aimcup-auction-api-next aimcup-auction-mongo-next aimcup-auction-redis-next 2>/dev/null || true
+
+      - name: Build and deploy Docker services
+        # next/ and production/ share this repo, so the test secrets use a NEXT_ prefix to avoid
+        # colliding with the production values (they map onto the same container env var names).
+        run: docker compose -p aimcup-auction-api-next -f docker-compose.next.yml up -d --build
+        env:
+          OSU_CLIENT_ID: ${{ secrets.NEXT_OSU_CLIENT_ID }}
+          OSU_CLIENT_SECRET: ${{ secrets.NEXT_OSU_CLIENT_SECRET }}
+          OSU_API_CLIENT_ID: ${{ secrets.NEXT_OSU_API_CLIENT_ID }}
+          OSU_API_CLIENT_SECRET: ${{ secrets.NEXT_OSU_API_CLIENT_SECRET }}
+          AUCTION_JWT_SECRET: ${{ secrets.NEXT_AUCTION_JWT_SECRET }}
+          DISCORD_BOT_TOKEN: ${{ secrets.NEXT_DISCORD_BOT_TOKEN }}
+          AUCTION_DISCORD_MESSAGE_CONTENT: ${{ vars.NEXT_AUCTION_DISCORD_MESSAGE_CONTENT }}
+          AUCTION_DEV_GRANT_ADMIN: ${{ vars.NEXT_AUCTION_DEV_GRANT_ADMIN }}
+          AUCTION_ADMIN_OSU_IDS: ${{ secrets.NEXT_AUCTION_ADMIN_OSU_IDS }}
+          MONGO_USERNAME: ${{ secrets.NEXT_MONGO_USERNAME }}
+          MONGO_PASSWORD: ${{ secrets.NEXT_MONGO_PASSWORD }}
