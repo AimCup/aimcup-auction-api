@@ -8,7 +8,14 @@ spring:
 
 server:
   # Behind Nginx Proxy Manager (TLS terminated there); honour X-Forwarded-* headers.
+  # NPM must use Scheme=http (the app serves plain HTTP on 8080; TLS is terminated at NPM).
   forward-headers-strategy: framework
+
+logging:
+  level:
+    # Public port gets scanned/probed with malformed HTTP (bare LF, HTTP/1.0). Netty rejects them
+    # and logs a WARN per hit — pure noise, so drop those decode-failure warnings to ERROR.
+    reactor.netty.http.server.HttpServerOperations: ERROR
 
 auction:
   frontend-url: https://auction-next.aimcup.xyz
