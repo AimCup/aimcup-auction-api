@@ -6,14 +6,24 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.BodyInserters;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import xyz.aimcup.auction.config.AuctionProperties;
 import xyz.aimcup.auction.domain.exception.NotFoundException;
 import xyz.aimcup.auction.domain.model.OsuBeatmap;
 import xyz.aimcup.auction.domain.model.OsuUserProfile;
 
+import java.net.URI;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
 
 /**
  * Reactive osu! API client. Uses the client-credentials grant to obtain a public-scope token
@@ -24,6 +34,10 @@ import java.util.concurrent.atomic.AtomicReference;
 public class OsuApiAdapter implements xyz.aimcup.auction.domain.port.out.OsuApiPort {
 
     private static final String TOKEN_URI = "https://osu.ppy.sh/oauth/token";
+    /** osu! batch endpoints cap at 50 ids per request (the server silently truncates beyond this). */
+    private static final int MAX_IDS_PER_REQUEST = 50;
+    /** Bound concurrent chunk requests so we stay polite to osu! rate limits. */
+    private static final int MAX_CONCURRENT_CHUNKS = 4;
 
     private final WebClient webClient;
     private final AuctionProperties.Osu osuProps;
@@ -58,6 +72,100 @@ public class OsuApiAdapter implements xyz.aimcup.auction.domain.port.out.OsuApiP
                         resp -> Mono.error(new NotFoundException("osu! beatmap " + beatmapId + " not found")))
                 .bodyToMono(JsonNode.class)
                 .map(node -> toBeatmap(beatmapId, node)));
+    }
+
+    @Override
+    public Mono<Map<Long, OsuUserProfile>> fetchUsers(Collection<Long> osuIds) {
+        List<Long> ids = distinct(osuIds);
+        if (ids.isEmpty()) {
+            return Mono.just(Map.of());
+        }
+        return accessToken().flatMap(token -> Flux.fromIterable(chunk(ids, MAX_IDS_PER_REQUEST))
+                .flatMap(batch -> getJson(batchUri("/users", batch), token).map(this::toProfileMap),
+                        MAX_CONCURRENT_CHUNKS)
+                .reduce(new HashMap<Long, OsuUserProfile>(), (acc, m) -> {
+                    acc.putAll(m);
+                    return acc;
+                })
+                .map(Collections::unmodifiableMap));
+    }
+
+    @Override
+    public Mono<Map<Long, OsuBeatmap>> fetchBeatmaps(Collection<Long> beatmapIds) {
+        List<Long> ids = distinct(beatmapIds);
+        if (ids.isEmpty()) {
+            return Mono.just(Map.of());
+        }
+        return accessToken().flatMap(token -> Flux.fromIterable(chunk(ids, MAX_IDS_PER_REQUEST))
+                .flatMap(batch -> getJson(batchUri("/beatmaps", batch), token).map(this::toBeatmapMap),
+                        MAX_CONCURRENT_CHUNKS)
+                .reduce(new HashMap<Long, OsuBeatmap>(), (acc, m) -> {
+                    acc.putAll(m);
+                    return acc;
+                })
+                .map(Collections::unmodifiableMap));
+    }
+
+    private Mono<JsonNode> getJson(URI uri, String token) {
+        // The batch endpoints simply omit unknown ids (no per-id 404), so no error mapping here.
+        return webClient.get()
+                .uri(uri)
+                .header("Authorization", "Bearer " + token)
+                .header("Accept", MediaType.APPLICATION_JSON_VALUE)
+                .retrieve()
+                .bodyToMono(JsonNode.class);
+    }
+
+    /**
+     * Builds {@code {base}{path}?ids[]=a&ids[]=b…} with the brackets pre-encoded as {@code %5B%5D}
+     * (which the osu! API accepts) so the value is a valid {@link URI} and WebClient sends it as-is.
+     */
+    private URI batchUri(String path, List<Long> ids) {
+        String query = ids.stream().map(id -> "ids%5B%5D=" + id).collect(Collectors.joining("&"));
+        return URI.create(osuProps.getApi().getBaseUrl() + path + "?" + query);
+    }
+
+    private Map<Long, OsuUserProfile> toProfileMap(JsonNode node) {
+        Map<Long, OsuUserProfile> out = new HashMap<>();
+        JsonNode users = node == null ? null : node.get("users");
+        if (users != null && users.isArray()) {
+            for (JsonNode u : users) {
+                if (u.hasNonNull("id")) {
+                    long id = u.get("id").asLong();
+                    out.put(id, toProfileCompact(id, u));
+                }
+            }
+        }
+        return out;
+    }
+
+    private Map<Long, OsuBeatmap> toBeatmapMap(JsonNode node) {
+        Map<Long, OsuBeatmap> out = new HashMap<>();
+        JsonNode beatmaps = node == null ? null : node.get("beatmaps");
+        if (beatmaps != null && beatmaps.isArray()) {
+            for (JsonNode b : beatmaps) {
+                if (b.hasNonNull("id")) {
+                    long id = b.get("id").asLong();
+                    out.put(id, toBeatmap(id, b)); // same element shape as the single endpoint
+                }
+            }
+        }
+        return out;
+    }
+
+    private static List<Long> distinct(Collection<Long> ids) {
+        if (ids == null) {
+            return List.of();
+        }
+        return ids.stream().filter(Objects::nonNull).distinct().toList();
+    }
+
+    private static <T> List<List<T>> chunk(List<T> src, int size) {
+        List<List<T>> chunks = new ArrayList<>();
+        for (int i = 0; i < src.size(); i += size) {
+            chunks.add(src.subList(i, Math.min(i + size, src.size())));
+        }
+        return chunks;
     }
 
     private OsuBeatmap toBeatmap(long beatmapId, JsonNode node) {
@@ -107,6 +215,28 @@ public class OsuApiAdapter implements xyz.aimcup.auction.domain.port.out.OsuApiP
         if (stats != null && !stats.isNull()) {
             globalRank = longOrNull(stats, "global_rank");
             countryRank = longOrNull(stats, "country_rank");
+        }
+        return new OsuUserProfile(osuId, username, avatarUrl, cover, countryCode, globalRank, countryRank);
+    }
+
+    /**
+     * Maps one element of the batch {@code GET /users} response (a compact user). Its shape differs
+     * from the single endpoint: there is no top-level {@code statistics} (ranks live under
+     * {@code statistics_rulesets.osu}) and the banner is only at {@code cover.url}. The batch
+     * endpoint does not expose {@code country_rank}, so it is left null here.
+     */
+    private OsuUserProfile toProfileCompact(long osuId, JsonNode node) {
+        String username = text(node, "username");
+        String avatarUrl = text(node, "avatar_url");
+        String cover = node.hasNonNull("cover") ? text(node.get("cover"), "url") : null;
+        String countryCode = text(node, "country_code");
+        Long globalRank = null;
+        Long countryRank = null;
+        JsonNode rulesets = node.get("statistics_rulesets");
+        if (rulesets != null && rulesets.hasNonNull("osu")) {
+            JsonNode osu = rulesets.get("osu");
+            globalRank = longOrNull(osu, "global_rank");
+            countryRank = longOrNull(osu, "country_rank"); // absent on this endpoint → null
         }
         return new OsuUserProfile(osuId, username, avatarUrl, cover, countryCode, globalRank, countryRank);
     }
