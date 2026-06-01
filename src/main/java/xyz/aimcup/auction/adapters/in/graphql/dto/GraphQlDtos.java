@@ -43,7 +43,8 @@ public final class GraphQlDtos {
             int minIncrement,
             int teamSizeForPercentLimit,
             int maxBidPercent,
-            int maxDescriptionLength
+            int maxDescriptionLength,
+            int maxTeamSize
     ) {
     }
 

@@ -8,6 +8,7 @@ import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
 import reactor.core.scheduler.Scheduler;
 import reactor.core.scheduler.Schedulers;
+import xyz.aimcup.auction.config.AuctionProperties;
 import xyz.aimcup.auction.domain.exception.BadRequestException;
 import xyz.aimcup.auction.domain.exception.ConflictException;
 import xyz.aimcup.auction.domain.exception.ForbiddenException;
@@ -72,17 +73,22 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
     private final LiveStatePort liveStatePort;
     private final DiscordNotificationPort discord;
     private final PresenceTracker presence;
+    private final AuctionProperties properties;
 
     private final Scheduler engineScheduler = Schedulers.newSingle("auction-engine", true);
     private final Map<UUID, RunningAuction> running = new ConcurrentHashMap<>();
     private final Map<UUID, Sinks.Many<LiveAuctionState>> sinks = new ConcurrentHashMap<>();
+    /** When the last readiness reminder was sent per auction, to honour the configured cadence. */
+    private final Map<UUID, Instant> lastReminderSent = new ConcurrentHashMap<>();
 
     public AuctionEngine(AuctionRepositoryPort auctionRepository, LiveStatePort liveStatePort,
-                         DiscordNotificationPort discord, PresenceTracker presence) {
+                         DiscordNotificationPort discord, PresenceTracker presence,
+                         AuctionProperties properties) {
         this.auctionRepository = auctionRepository;
         this.liveStatePort = liveStatePort;
         this.discord = discord;
         this.presence = presence;
+        this.properties = properties;
     }
 
     @PostConstruct
@@ -94,16 +100,26 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                 .onErrorContinue((e, o) -> log.warn("presence rebroadcast failed: {}", e.toString()))
                 .subscribe();
 
-        // Every 3 minutes, ping the captains who have not confirmed readiness for an auction that is
-        // waiting to start (or paused). The first tick fires after the interval, never immediately.
-        Flux.interval(Duration.ofMinutes(3), Schedulers.boundedElastic())
-                .onBackpressureDrop()
-                .flatMap(tick -> remindNotReady())
-                .onErrorContinue((e, o) -> log.warn("readiness reminder failed: {}", e.toString()))
-                .subscribe();
+        // Ping captains who have not confirmed readiness, on a schedule anchored to each auction's
+        // start time (see AuctionProperties.Reminder). The scheduler wakes every tickSeconds; whether
+        // a given auction is actually due is decided per-auction in remindNotReady().
+        AuctionProperties.Reminder cfg = properties.getReminder();
+        if (cfg.isEnabled()) {
+            Flux.interval(Duration.ofSeconds(Math.max(10, cfg.getTickSeconds())), Schedulers.boundedElastic())
+                    .onBackpressureDrop()
+                    // concatMap (not flatMap) so a slow pass can never overlap the next tick and
+                    // double-send a reminder for the same auction.
+                    .concatMap(tick -> remindNotReady())
+                    .onErrorContinue((e, o) -> log.warn("readiness reminder failed: {}", e.toString()))
+                    .subscribe();
+        }
     }
 
     private Mono<Void> remindNotReady() {
+        Instant now = Instant.now();
+        // Reads PAUSED auctions' state/readiness off the engine thread; this is intentional and
+        // tolerates slight staleness — the worst case is one reminder fired/skipped a tick early or
+        // late, self-corrected on the next tick. Reminders never mutate auction state.
         List<Auction> pausedRunning = running.values().stream()
                 .map(ra -> ra.auction)
                 .filter(a -> a.getState() == AuctionState.PAUSED)
@@ -111,14 +127,47 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         return Flux.concat(Flux.fromIterable(pausedRunning),
                         auctionRepository.findByState(AuctionState.SCHEDULED))
                 .filter(a -> a.getChannelId() != null && !a.getChannelId().isBlank())
-                .filter(a -> !a.getCaptains().isEmpty())
+                .filter(a -> a.getCaptains().stream().anyMatch(c -> !c.isReady()))
                 .flatMap(a -> {
-                    List<Captain> notReady = a.getCaptains().stream()
-                            .filter(c -> !c.isReady())
-                            .toList();
-                    return notReady.isEmpty() ? Mono.<Void>empty() : discord.remindNotReady(a, notReady);
+                    Integer intervalMinutes = dueReminderIntervalMinutes(a, now);
+                    if (intervalMinutes == null) {
+                        return Mono.<Void>empty();
+                    }
+                    Instant last = lastReminderSent.get(a.getId());
+                    if (last != null
+                            && Duration.between(last, now).getSeconds() < intervalMinutes * 60L - 30) {
+                        return Mono.<Void>empty();
+                    }
+                    lastReminderSent.put(a.getId(), now);
+                    List<Captain> notReady = a.getCaptains().stream().filter(c -> !c.isReady()).toList();
+                    return discord.remindNotReady(a, notReady);
                 })
                 .then();
+    }
+
+    /**
+     * The current reminder interval (minutes) for an auction, or {@code null} if no reminder is due
+     * yet. SCHEDULED auctions follow the start-anchored phases; PAUSED auctions (no start anchor) use
+     * the post-start cadence so captains re-confirm promptly.
+     */
+    private Integer dueReminderIntervalMinutes(Auction a, Instant now) {
+        AuctionProperties.Reminder cfg = properties.getReminder();
+        if (a.getState() == AuctionState.PAUSED) {
+            return cfg.getAfterStartIntervalMinutes();
+        }
+        Instant startAt = a.getStartAt();
+        if (startAt == null) {
+            return null; // no start time → nothing to anchor reminders to
+        }
+        Instant windowStart = startAt.minus(Duration.ofMinutes(cfg.getLeadTimeMinutes()));
+        if (now.isBefore(windowStart)) {
+            return null; // too early — more than leadTime before the start
+        }
+        if (now.isBefore(startAt)) {
+            Instant phase1End = windowStart.plus(Duration.ofMinutes(cfg.getPhase1DurationMinutes()));
+            return now.isBefore(phase1End) ? cfg.getPhase1IntervalMinutes() : cfg.getPhase2IntervalMinutes();
+        }
+        return cfg.getAfterStartIntervalMinutes(); // start time passed, still not running
     }
 
     // ====================================================================================
@@ -211,6 +260,7 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         ra.stageIndex = 0;
         ra.queue = new ArrayDeque<>(auction.auctionablePlayers().stream().map(Player::getId).toList());
         running.put(auction.getId(), ra);
+        lastReminderSent.remove(auction.getId());
 
         persistAsync(auction);
         discord.auctionStarted(auction).subscribe();
@@ -319,6 +369,9 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
             return BidResult.rejected("Only captains of this auction may bid", ra.highestBid);
         }
         AuctionSettings s = ra.auction.getSettings();
+        if (s.getMaxTeamSize() > 0 && captain.teamSize() >= s.getMaxTeamSize()) {
+            return BidResult.rejected("Your team is full (" + s.getMaxTeamSize() + " players)", ra.highestBid);
+        }
         int bid = forceMax ? s.getMaxBid() : requested;
         boolean isMax = bid == s.getMaxBid();
 

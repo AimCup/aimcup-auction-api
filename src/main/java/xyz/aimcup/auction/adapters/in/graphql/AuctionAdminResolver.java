@@ -55,6 +55,7 @@ public class AuctionAdminResolver {
                 .teamSizeForPercentLimit(input.teamSizeForPercentLimit())
                 .maxBidPercent(input.maxBidPercent())
                 .maxDescriptionLength(input.maxDescriptionLength())
+                .maxTeamSize(input.maxTeamSize())
                 .build();
         return adminUseCase.updateSettings(user.osuId(), UUID.fromString(auctionId), settings)
                 .map(GraphQlMapper::toDto);

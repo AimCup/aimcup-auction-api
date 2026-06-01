@@ -15,6 +15,7 @@ type AuctionSettings {
     teamSizeForPercentLimit: Int!
     maxBidPercent: Int!
     maxDescriptionLength: Int!
+    maxTeamSize: Int!
 }
 
 type AuctionStage {
@@ -202,6 +203,7 @@ input AuctionSettingsInput {
     teamSizeForPercentLimit: Int!
     maxBidPercent: Int!
     maxDescriptionLength: Int!
+    maxTeamSize: Int!
 }
 
 input StageInput {

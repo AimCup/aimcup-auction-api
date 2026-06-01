@@ -123,6 +123,10 @@ public class AuctionAdminService implements AuctionAdminUseCase {
         if (s.getMaxDescriptionLength() < 1) {
             throw new BadRequestException("Description length must be positive");
         }
+        if (s.getMaxTeamSize() < 1 || s.getMaxTeamSize() < s.getTeamSizeForPercentLimit()) {
+            throw new BadRequestException("Maximum team size must be at least "
+                    + Math.max(1, s.getTeamSizeForPercentLimit()));
+        }
     }
 
     @Override

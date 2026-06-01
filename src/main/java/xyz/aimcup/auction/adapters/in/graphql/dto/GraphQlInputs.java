@@ -17,7 +17,8 @@ public final class GraphQlInputs {
             int minIncrement,
             int teamSizeForPercentLimit,
             int maxBidPercent,
-            int maxDescriptionLength
+            int maxDescriptionLength,
+            int maxTeamSize
     ) {
     }
 

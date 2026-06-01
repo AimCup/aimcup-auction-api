@@ -45,7 +45,18 @@ public class AuctionSettings {
     @Builder.Default
     private int maxDescriptionLength = 360;
 
+    /**
+     * Largest roster a captain may build. Once a captain owns this many players they can no longer
+     * bid. Must be at least {@link #teamSizeForPercentLimit}. A value of {@code 0} means "no limit".
+     *
+     * <p>Deliberately has no {@code @Builder.Default}: that would bake 8 into the no-arg constructor
+     * Spring Data uses to deserialize, so a legacy document missing this key would come back as 8
+     * instead of 0. Leaving it un-defaulted means absent ⇒ 0 (no limit); new auctions get their
+     * default from {@link #defaults()}.
+     */
+    private int maxTeamSize;
+
     public static AuctionSettings defaults() {
-        return AuctionSettings.builder().build();
+        return AuctionSettings.builder().maxTeamSize(8).build();
     }
 }

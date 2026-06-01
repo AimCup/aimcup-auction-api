@@ -67,7 +67,8 @@ public final class GraphQlMapper {
     public static GraphQlDtos.SettingsDto toDto(AuctionSettings s) {
         return new GraphQlDtos.SettingsDto(
                 s.getStartingBalance(), s.getMaxBid(), s.getMinIncrement(),
-                s.getTeamSizeForPercentLimit(), s.getMaxBidPercent(), s.getMaxDescriptionLength());
+                s.getTeamSizeForPercentLimit(), s.getMaxBidPercent(), s.getMaxDescriptionLength(),
+                s.getMaxTeamSize());
     }
 
     public static GraphQlDtos.StageDto toDto(AuctionStage s) {

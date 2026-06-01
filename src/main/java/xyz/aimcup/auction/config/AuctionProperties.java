@@ -24,6 +24,8 @@ public class AuctionProperties {
     private Osu osu = new Osu();
     @NestedConfigurationProperty
     private Discord discord = new Discord();
+    @NestedConfigurationProperty
+    private Reminder reminder = new Reminder();
 
     @Data
     public static class Jwt {
@@ -69,5 +71,31 @@ public class AuctionProperties {
          * set to {@code false} if the bot is not authorised for it (otherwise login is rejected).
          */
         private boolean messageContentIntent = true;
+    }
+
+    /**
+     * Discord readiness-reminder cadence, anchored to each auction's start time. Nothing is sent
+     * earlier than {@code leadTimeMinutes} before the start. From there, reminders go out every
+     * {@code phase1IntervalMinutes} for the first {@code phase1DurationMinutes}, then every
+     * {@code phase2IntervalMinutes} until the start time, and finally every
+     * {@code afterStartIntervalMinutes} while the auction is still unstarted (or paused).
+     *
+     * <p>Defaults: start at 12:00 → from 11:00 every 15 min (×2), from 11:30 every 10 min (×3),
+     * from 12:00 every 1 min.
+     */
+    @Data
+    public static class Reminder {
+        private boolean enabled = true;
+        /** How often the scheduler wakes up to evaluate reminders. */
+        private int tickSeconds = 60;
+        /** Don't send any reminder earlier than this many minutes before the start time. */
+        private int leadTimeMinutes = 60;
+        /** Length of the first (slower) window, measured from {@code leadTimeMinutes} before start. */
+        private int phase1DurationMinutes = 30;
+        private int phase1IntervalMinutes = 15;
+        /** Interval used from the end of phase 1 until the start time. */
+        private int phase2IntervalMinutes = 10;
+        /** Interval used once the start time has passed but the auction is still not running. */
+        private int afterStartIntervalMinutes = 1;
     }
 }
