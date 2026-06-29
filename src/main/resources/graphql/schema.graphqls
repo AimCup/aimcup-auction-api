@@ -6,12 +6,13 @@
 
 enum AuctionState { SCHEDULED RUNNING PAUSED FINISHED }
 enum PlayerStatus { AVAILABLE SOLD UNSOLD }
-enum AuctionPhase { WAITING_TO_START BIDDING GAP PAUSED FINISHED }
+enum AuctionPhase { WAITING_TO_START BIDDING MAX_BID_WINDOW MAX_BID_DRAW GAP PAUSED FINISHED }
 
 type AuctionSettings {
     startingBalance: Int!
     maxBid: Int!
     minIncrement: Int!
+    maxBidWindowSeconds: Int!
     teamSizeForPercentLimit: Int!
     maxBidPercent: Int!
     maxDescriptionLength: Int!
@@ -113,6 +114,8 @@ type LiveAuctionState {
     highestBid: Int!
     highestBidderId: ID
     highestBidderUsername: String
+    maxBidderIds: [ID!]!
+    maxBidWinnerId: ID
     bidHistory: [BidEvent!]!
     phaseEndsAtEpochMs: Float!
     pausedByOrganizer: Boolean!
@@ -200,6 +203,7 @@ input AuctionSettingsInput {
     startingBalance: Int!
     maxBid: Int!
     minIncrement: Int!
+    maxBidWindowSeconds: Int!
     teamSizeForPercentLimit: Int!
     maxBidPercent: Int!
     maxDescriptionLength: Int!

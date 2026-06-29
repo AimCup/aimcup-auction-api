@@ -28,6 +28,15 @@ public class AuctionSettings {
     private int minIncrement = 100;
 
     /**
+     * Seconds the auction waits after the first max bid for other captains to counter with their own
+     * max bid. When the window closes the winner is drawn at random from everyone who maxed, so a max
+     * bid is no longer first-come-first-served. {@code @Builder.Default} means a legacy document
+     * missing this key deserializes to 10 (the sensible default) rather than 0.
+     */
+    @Builder.Default
+    private int maxBidWindowSeconds = 10;
+
+    /**
      * Number of players a captain must already own before the {@link #maxBidPercent}
      * cap stops applying.
      */

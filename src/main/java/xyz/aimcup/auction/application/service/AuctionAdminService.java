@@ -114,6 +114,9 @@ public class AuctionAdminService implements AuctionAdminUseCase {
         if (s.getMinIncrement() <= 0) {
             throw new BadRequestException("Minimum increment must be positive");
         }
+        if (s.getMaxBidWindowSeconds() < 1 || s.getMaxBidWindowSeconds() > 120) {
+            throw new BadRequestException("Max bid window must be between 1 and 120 seconds");
+        }
         if (s.getMaxBidPercent() < 1 || s.getMaxBidPercent() > 100) {
             throw new BadRequestException("Max bid percent must be between 1 and 100");
         }

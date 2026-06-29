@@ -35,6 +35,19 @@ public class LiveAuctionState {
     private UUID highestBidderId;
     private String highestBidderUsername;
 
+    /**
+     * Captain ids who placed a max bid for the current player (the draw pool). Populated only during
+     * the {@link AuctionPhase#MAX_BID_WINDOW} and {@link AuctionPhase#MAX_BID_DRAW} phases; empty
+     * otherwise. The client lights up these captains as contenders.
+     */
+    @Builder.Default
+    private List<UUID> maxBidderIds = new ArrayList<>();
+    /**
+     * The captain drawn to win the max-bid round. Set during {@link AuctionPhase#MAX_BID_DRAW} so the
+     * client can run the reveal animation; null at all other times.
+     */
+    private UUID maxBidWinnerId;
+
     /** Bid history for the current player only; cleared when a new player comes up. */
     @Builder.Default
     private List<BidEvent> bidHistory = new ArrayList<>();

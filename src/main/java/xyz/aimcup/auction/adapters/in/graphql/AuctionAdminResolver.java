@@ -52,6 +52,7 @@ public class AuctionAdminResolver {
                 .startingBalance(input.startingBalance())
                 .maxBid(input.maxBid())
                 .minIncrement(input.minIncrement())
+                .maxBidWindowSeconds(input.maxBidWindowSeconds())
                 .teamSizeForPercentLimit(input.teamSizeForPercentLimit())
                 .maxBidPercent(input.maxBidPercent())
                 .maxDescriptionLength(input.maxDescriptionLength())

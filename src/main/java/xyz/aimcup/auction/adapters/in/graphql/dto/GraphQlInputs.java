@@ -15,6 +15,7 @@ public final class GraphQlInputs {
             int startingBalance,
             int maxBid,
             int minIncrement,
+            int maxBidWindowSeconds,
             int teamSizeForPercentLimit,
             int maxBidPercent,
             int maxDescriptionLength,

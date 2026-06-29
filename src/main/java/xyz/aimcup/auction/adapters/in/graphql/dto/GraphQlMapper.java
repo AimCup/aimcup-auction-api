@@ -66,7 +66,7 @@ public final class GraphQlMapper {
 
     public static GraphQlDtos.SettingsDto toDto(AuctionSettings s) {
         return new GraphQlDtos.SettingsDto(
-                s.getStartingBalance(), s.getMaxBid(), s.getMinIncrement(),
+                s.getStartingBalance(), s.getMaxBid(), s.getMinIncrement(), s.getMaxBidWindowSeconds(),
                 s.getTeamSizeForPercentLimit(), s.getMaxBidPercent(), s.getMaxDescriptionLength(),
                 s.getMaxTeamSize());
     }
@@ -116,6 +116,9 @@ public final class GraphQlMapper {
                 s.getHighestBid(),
                 id(s.getHighestBidderId()),
                 s.getHighestBidderUsername(),
+                s.getMaxBidderIds() == null ? List.of()
+                        : s.getMaxBidderIds().stream().map(GraphQlMapper::id).toList(),
+                id(s.getMaxBidWinnerId()),
                 s.getBidHistory().stream().map(GraphQlMapper::toDto).toList(),
                 s.getPhaseEndsAtEpochMs(),
                 s.isPausedByOrganizer(),

@@ -2,6 +2,8 @@ package xyz.aimcup.auction.application.engine;
 
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -44,6 +46,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
  * The reactive auction engine. It is the single source of truth for every running auction and is the
@@ -74,6 +77,13 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
     private final DiscordNotificationPort discord;
     private final PresenceTracker presence;
     private final AuctionProperties properties;
+
+    /**
+     * How long the "which captain wins" reveal lasts after the max-bid window closes. Fixed (not
+     * organizer-configurable): it only paces the client animation, and the client reads the exact end
+     * time from {@code phaseEndsAtEpochMs}, so the two stay in lock-step.
+     */
+    private static final int MAX_BID_DRAW_SECONDS = 5;
 
     private final Scheduler engineScheduler = Schedulers.newSingle("auction-engine", true);
     private final Map<UUID, RunningAuction> running = new ConcurrentHashMap<>();
@@ -113,6 +123,83 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                     .onErrorContinue((e, o) -> log.warn("readiness reminder failed: {}", e.toString()))
                     .subscribe();
         }
+    }
+
+    // ====================================================================================
+    //  Crash recovery
+    // ====================================================================================
+
+    /**
+     * After a restart, any auction left RUNNING or PAUSED in the durable store has lost its in-memory
+     * runtime state — the player queue, stage cursor and timers live only in {@link RunningAuction},
+     * never in Mongo. Without recovery such an auction is a zombie: the store says RUNNING but the
+     * engine has no record of it, so bids, pause/resume and even a fresh start all fail.
+     *
+     * <p>On startup we rebuild that runtime state from the persisted roster (player statuses, balances
+     * and the stage cursor are all durable) and force every interrupted auction into PAUSED. An
+     * organizer must press resume — and captains re-confirm readiness — before bidding continues; we
+     * never silently restart a countdown that was cut off mid-bid. Sold/unsold results already flushed
+     * to Mongo are preserved; only the in-flight player (still AVAILABLE) returns to the queue.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void recoverInterruptedAuctions() {
+        Flux.concat(auctionRepository.findByState(AuctionState.RUNNING),
+                        auctionRepository.findByState(AuctionState.PAUSED))
+                .flatMap(auction -> Mono.<Void>fromRunnable(() -> rehydrateAsPaused(auction))
+                        .subscribeOn(engineScheduler))
+                .onErrorContinue((e, o) -> log.error("Failed to recover an interrupted auction: {}", e.toString()))
+                .subscribe();
+    }
+
+    /**
+     * Rebuilds a {@link RunningAuction} for an auction that was interrupted by a restart and parks it
+     * in PAUSED. Runs on the engine thread so it is serialized with every other state change.
+     */
+    private void rehydrateAsPaused(Auction auction) {
+        if (running.containsKey(auction.getId())) {
+            return; // already live on this instance — nothing to recover
+        }
+        boolean wasRunning = auction.getState() == AuctionState.RUNNING;
+
+        RunningAuction ra = new RunningAuction(auction, sinkFor(auction.getId()));
+        ra.stageIndex = auction.getCurrentStageIndex();
+        // AVAILABLE auctionable players are exactly the current stage's remaining pool (including the
+        // player who was up when the crash happened — they were never finalized), so this faithfully
+        // restores where bidding left off.
+        List<UUID> remaining = new ArrayList<>(auction.auctionablePlayers().stream()
+                .filter(p -> p.getStatus() == PlayerStatus.AVAILABLE)
+                .map(Player::getId)
+                .toList());
+        // Stages after the first re-auction their pool in random order (see onStageComplete); keep that
+        // property on recovery so a mid-stage restart doesn't silently fall back to a fixed ordering.
+        if (ra.stageIndex > 0) {
+            Collections.shuffle(remaining);
+        }
+        ra.queue = new ArrayDeque<>(remaining);
+        ra.phase = AuctionPhase.PAUSED;
+        ra.currentPlayerId = null;
+        ra.highestBid = 0;
+        ra.highestBidderId = null;
+        ra.highestBidderUsername = null;
+        ra.bidHistory = new ArrayList<>();
+        ra.phaseEndsAtEpochMs = 0;
+        ra.pauseRequested = false;
+        ra.message = "Auction paused after a server restart — an organizer must resume it";
+
+        if (wasRunning) {
+            // A live auction was cut off: drop it to PAUSED and make captains re-confirm readiness,
+            // mirroring a normal organizer pause (see enterPaused). Already-PAUSED auctions keep their
+            // persisted state and readiness untouched — we only rebuild their runtime state.
+            auction.setState(AuctionState.PAUSED);
+            auction.getCaptains().forEach(c -> c.setReady(false));
+            persistAsync(auction);
+            discord.auctionPaused(auction).subscribe();
+        }
+
+        running.put(auction.getId(), ra);
+        broadcast(ra);
+        log.info("Recovered auction {} as PAUSED ({} players still to auction, stage {})",
+                auction.getId(), ra.queue.size(), ra.stageIndex);
     }
 
     private Mono<Void> remindNotReady() {
@@ -361,7 +448,11 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
 
     private BidResult doBid(UUID auctionId, BidActor actor, int requested, boolean forceMax, String source) {
         RunningAuction ra = running.get(auctionId);
-        if (ra == null || ra.phase != AuctionPhase.BIDDING || ra.currentPlayerId == null) {
+        // Bids are accepted while a player is up: normal bids during BIDDING, counter max bids during
+        // the MAX_BID_WINDOW. The MAX_BID_DRAW (winner already chosen) and every other phase are closed.
+        boolean biddable = ra != null && ra.currentPlayerId != null
+                && (ra.phase == AuctionPhase.BIDDING || ra.phase == AuctionPhase.MAX_BID_WINDOW);
+        if (!biddable) {
             return BidResult.rejected("No player is currently up for bidding", ra == null ? 0 : ra.highestBid);
         }
         Captain captain = resolveCaptain(ra, actor);
@@ -374,6 +465,12 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         }
         int bid = forceMax ? s.getMaxBid() : requested;
         boolean isMax = bid == s.getMaxBid();
+
+        // Once a max bid is called the price is locked at the max; only counter max bids matter.
+        if (ra.phase == AuctionPhase.MAX_BID_WINDOW && !isMax) {
+            return BidResult.rejected("A max bid was called — you can only counter with your own max bid",
+                    ra.highestBid);
+        }
 
         if (bid <= 0) {
             return BidResult.rejected("Bid must be a positive amount", ra.highestBid);
@@ -392,47 +489,105 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                         ra.highestBid);
             }
         }
-        if (!isMax) {
-            int minNext = ra.highestBid == 0 ? s.getMinIncrement() : ra.highestBid + s.getMinIncrement();
-            if (bid < minNext) {
-                return BidResult.rejected("The next bid must be at least " + minNext, ra.highestBid);
-            }
-            if (s.getMinIncrement() > 0 && bid % s.getMinIncrement() != 0) {
-                return BidResult.rejected("Bids must be in increments of " + s.getMinIncrement(), ra.highestBid);
-            }
-        } else if (ra.highestBid >= bid && ra.highestBidderId != null
-                && !ra.highestBidderId.equals(captain.getId())) {
-            return BidResult.rejected("The current bid already meets the max bid", ra.highestBid);
+
+        if (isMax) {
+            return doMaxBid(ra, captain, s, source);
+        }
+
+        // ----- regular incremental bid (BIDDING phase only) -----
+        int minNext = ra.highestBid == 0 ? s.getMinIncrement() : ra.highestBid + s.getMinIncrement();
+        if (bid < minNext) {
+            return BidResult.rejected("The next bid must be at least " + minNext, ra.highestBid);
+        }
+        if (s.getMinIncrement() > 0 && bid % s.getMinIncrement() != 0) {
+            return BidResult.rejected("Bids must be in increments of " + s.getMinIncrement(), ra.highestBid);
         }
 
         ra.highestBid = bid;
         ra.highestBidderId = captain.getId();
         ra.highestBidderUsername = captain.getUsername();
+        recordBid(ra, captain, bid, false, source);
+        scheduleDeadline(ra, stage(ra).getBiddingTimeAfterBidSeconds(), () -> onBiddingDeadline(ra));
+        broadcast(ra);
+        return BidResult.accepted(ra.highestBid);
+    }
+
+    /**
+     * Handles a max bid. The first max bid for a player opens the {@link AuctionPhase#MAX_BID_WINDOW};
+     * subsequent ones join the draw pool without extending the (fixed) window. A captain may only max
+     * once per player. The winner is drawn at random when the window closes — see
+     * {@link #onMaxBidWindowDeadline}.
+     */
+    private BidResult doMaxBid(RunningAuction ra, Captain captain, AuctionSettings s, String source) {
+        if (ra.maxBidders.contains(captain.getId())) {
+            return BidResult.rejected("You have already placed a max bid for this player", ra.highestBid);
+        }
+        boolean firstMax = ra.phase != AuctionPhase.MAX_BID_WINDOW;
+        ra.maxBidders.add(captain.getId());
+        ra.highestBid = s.getMaxBid();
+        ra.highestBidderId = captain.getId();
+        ra.highestBidderUsername = captain.getUsername();
+        recordBid(ra, captain, s.getMaxBid(), true, source);
+
+        if (firstMax) {
+            enterMaxBidWindow(ra);
+            return BidResult.accepted("Max bid! Other captains can still counter before the draw.", ra.highestBid);
+        }
+        // Fixed window: a counter max bid joins the pool but never resets the clock.
+        broadcast(ra);
+        return BidResult.accepted("You're in the max-bid draw.", ra.highestBid);
+    }
+
+    /** Builds the bid event, appends it to the current player's history, and mirrors it to Discord. */
+    private void recordBid(RunningAuction ra, Captain captain, int amount, boolean isMax, String source) {
         BidEvent event = BidEvent.builder()
                 .captainId(captain.getId())
                 .captainUsername(captain.getUsername())
                 .captainAvatarUrl(captain.getAvatarUrl())
-                .amount(bid)
+                .amount(amount)
                 .at(Instant.now())
                 .maxBid(isMax)
                 .source(source)
                 .build();
         ra.bidHistory.add(event);
-
         Player player = ra.auction.findPlayer(ra.currentPlayerId).orElse(null);
         if (player != null) {
             discord.bidPlaced(ra.auction, player, event).subscribe();
         }
+    }
 
-        if (isMax) {
-            broadcast(ra);
-            cancelDeadline(ra);
+    private void enterMaxBidWindow(RunningAuction ra) {
+        ra.phase = AuctionPhase.MAX_BID_WINDOW;
+        ra.maxBidWinnerId = null;
+        ra.message = "Max bid! Other captains can counter with their own max bid before the draw.";
+        int seconds = Math.max(1, ra.auction.getSettings().getMaxBidWindowSeconds());
+        scheduleDeadline(ra, seconds, () -> onMaxBidWindowDeadline(ra));
+        broadcast(ra);
+    }
+
+    private void onMaxBidWindowDeadline(RunningAuction ra) {
+        List<UUID> pool = new ArrayList<>(ra.maxBidders);
+        if (pool.isEmpty()) {
+            // The window only opens on a max bid, so the pool is never empty here — guard regardless.
             finalizePlayer(ra);
-        } else {
-            scheduleDeadline(ra, stage(ra).getBiddingTimeAfterBidSeconds(), () -> onBiddingDeadline(ra));
-            broadcast(ra);
+            return;
         }
-        return BidResult.accepted(ra.highestBid);
+        UUID winner = pool.get(ThreadLocalRandom.current().nextInt(pool.size()));
+        ra.maxBidWinnerId = winner;
+        ra.highestBidderId = winner;
+        ra.auction.findCaptain(winner).ifPresent(c -> ra.highestBidderUsername = c.getUsername());
+        enterMaxBidDraw(ra);
+    }
+
+    private void enterMaxBidDraw(RunningAuction ra) {
+        ra.phase = AuctionPhase.MAX_BID_DRAW;
+        ra.message = ra.maxBidders.size() > 1
+                ? "Drawing the winner from " + ra.maxBidders.size() + " max bids…"
+                : "Max bid confirmed — awarding the player…";
+        // The player is awarded only when this reveal window ends, so the team panels never spoil the
+        // outcome before the animation lands.
+        scheduleDeadline(ra, MAX_BID_DRAW_SECONDS, () -> finalizePlayer(ra));
+        broadcast(ra);
     }
 
     private Captain resolveCaptain(RunningAuction ra, BidActor actor) {
@@ -532,6 +687,8 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         ra.highestBidderId = null;
         ra.highestBidderUsername = null;
         ra.bidHistory = new ArrayList<>();
+        ra.maxBidders.clear();
+        ra.maxBidWinnerId = null;
         ra.phase = AuctionPhase.BIDDING;
         ra.message = null;
         scheduleDeadline(ra, stage(ra).getBiddingTimeSeconds(), () -> onBiddingDeadline(ra));
@@ -570,6 +727,9 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
     }
 
     private void afterPlayer(RunningAuction ra) {
+        // The player has resolved — clear the max-bid draw state so the GAP/PAUSED snapshot is clean.
+        ra.maxBidders.clear();
+        ra.maxBidWinnerId = null;
         if (ra.pauseRequested) {
             enterPaused(ra);
         } else {
@@ -628,6 +788,8 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         ra.currentPlayerId = null;
         ra.highestBid = 0;
         ra.highestBidderId = null;
+        ra.maxBidders.clear();
+        ra.maxBidWinnerId = null;
         ra.phaseEndsAtEpochMs = 0;
         ra.message = "Auction paused by an organizer — it will resume shortly";
         cancelDeadline(ra);
@@ -641,6 +803,8 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         ra.auction.setFinishedAt(Instant.now());
         ra.phase = AuctionPhase.FINISHED;
         ra.currentPlayerId = null;
+        ra.maxBidders.clear();
+        ra.maxBidWinnerId = null;
         ra.phaseEndsAtEpochMs = 0;
         ra.message = null;
         cancelDeadline(ra);
@@ -733,6 +897,8 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                 .highestBid(ra.highestBid)
                 .highestBidderId(ra.highestBidderId)
                 .highestBidderUsername(ra.highestBidderUsername)
+                .maxBidderIds(new ArrayList<>(ra.maxBidders))
+                .maxBidWinnerId(ra.maxBidWinnerId)
                 .bidHistory(new ArrayList<>(ra.bidHistory))
                 .phaseEndsAtEpochMs(ra.phaseEndsAtEpochMs)
                 .pausedByOrganizer(a.getState() == AuctionState.PAUSED)
@@ -740,7 +906,7 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                 .captains(a.getCaptains().stream().map(this::copy).toList())
                 .players(a.getPlayers().stream().map(this::copy).toList())
                 .onlineOsuIds(new ArrayList<>(presence.onlineOsuIds(a.getId())))
-                .remainingCount(ra.queue.size() + (ra.phase == AuctionPhase.BIDDING && ra.currentPlayerId != null ? 1 : 0))
+                .remainingCount(ra.queue.size() + (hasCurrentPlayerUp(ra) ? 1 : 0))
                 .soldCount(countStatus(a, PlayerStatus.SOLD))
                 .unsoldCount(countStatus(a, PlayerStatus.UNSOLD))
                 .version(ra.version)
@@ -773,6 +939,14 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                 .unsoldCount(countStatus(a, PlayerStatus.UNSOLD))
                 .version(0)
                 .build();
+    }
+
+    /** Whether a player is currently up and not yet awarded: bidding, in the max window, or being drawn. */
+    private boolean hasCurrentPlayerUp(RunningAuction ra) {
+        return ra.currentPlayerId != null
+                && (ra.phase == AuctionPhase.BIDDING
+                    || ra.phase == AuctionPhase.MAX_BID_WINDOW
+                    || ra.phase == AuctionPhase.MAX_BID_DRAW);
     }
 
     private int countStatus(Auction a, PlayerStatus status) {
