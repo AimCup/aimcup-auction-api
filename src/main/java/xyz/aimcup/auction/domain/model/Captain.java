@@ -43,6 +43,12 @@ public class Captain {
     @Builder.Default
     private List<UUID> teamPlayerIds = new ArrayList<>();
 
+    /**
+     * Optional proxy acting on this captain's behalf. When set, only the proxy's identity may bid /
+     * confirm readiness for this captain; the captain's own osu!/Discord identity is locked out.
+     */
+    private ProxyBidder proxy;
+
     public int teamSize() {
         return teamPlayerIds == null ? 0 : teamPlayerIds.size();
     }

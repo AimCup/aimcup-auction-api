@@ -104,8 +104,12 @@ public final class GraphQlDtos {
             String discordId,
             int balance,
             boolean ready,
-            List<String> teamPlayerIds
+            List<String> teamPlayerIds,
+            ProxyDto proxy
     ) {
+    }
+
+    public record ProxyDto(long osuId, String username, String avatarUrl, String discordId) {
     }
 
     public record BidEventDto(

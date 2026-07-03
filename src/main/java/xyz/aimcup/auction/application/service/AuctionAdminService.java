@@ -18,6 +18,7 @@ import xyz.aimcup.auction.domain.model.OsuBeatmap;
 import xyz.aimcup.auction.domain.model.OsuUserProfile;
 import xyz.aimcup.auction.domain.model.Player;
 import xyz.aimcup.auction.domain.model.PlayerStatus;
+import xyz.aimcup.auction.domain.model.ProxyBidder;
 import xyz.aimcup.auction.domain.port.in.AuctionAdminUseCase;
 import xyz.aimcup.auction.domain.port.in.command.AddPlayerCommand;
 import xyz.aimcup.auction.domain.port.in.command.CreateAuctionCommand;
@@ -535,6 +536,35 @@ public class AuctionAdminService implements AuctionAdminUseCase {
             player.setDiscordId(null);
             auction.getCaptains().removeIf(c -> c.getPlayerId().equals(playerId));
             return auctionRepository.save(auction).thenReturn(player);
+        });
+    }
+
+    @Override
+    public Mono<Auction> setCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId, long proxyOsuId,
+                                         String proxyDiscordId) {
+        return editable(auctionId, actingOsuId).flatMap(auction -> {
+            Captain captain = auction.findCaptain(captainId)
+                    .orElseThrow(() -> new NotFoundException("Captain not found"));
+            // A proxy is not a participant: reject an osu! id that already belongs to a player/captain.
+            if (auction.findPlayerByOsuId(proxyOsuId).isPresent()) {
+                return Mono.error(new BadRequestException("The proxy cannot be a player already in this auction"));
+            }
+            // One identity can't proxy for two captains, or resolution would be ambiguous.
+            boolean proxyTaken = auction.getCaptains().stream()
+                    .anyMatch(c -> !c.getId().equals(captainId) && c.getProxy() != null
+                            && c.getProxy().getOsuId() != null && c.getProxy().getOsuId() == proxyOsuId);
+            if (proxyTaken) {
+                return Mono.error(new BadRequestException("That osu! id is already a proxy for another captain"));
+            }
+            return osuApi.fetchUser(proxyOsuId).flatMap(profile -> {
+                captain.setProxy(ProxyBidder.builder()
+                        .osuId(proxyOsuId)
+                        .discordId(blankToNull(proxyDiscordId))
+                        .username(profile.username())
+                        .avatarUrl(profile.avatarUrl())
+                        .build());
+                return auctionRepository.save(auction);
+            });
         });
     }
 

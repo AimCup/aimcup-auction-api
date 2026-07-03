@@ -25,6 +25,7 @@ import xyz.aimcup.auction.domain.model.Captain;
 import xyz.aimcup.auction.domain.model.LiveAuctionState;
 import xyz.aimcup.auction.domain.model.Player;
 import xyz.aimcup.auction.domain.model.PlayerStatus;
+import xyz.aimcup.auction.domain.model.ProxyBidder;
 import xyz.aimcup.auction.domain.port.in.AuctionChannelLookup;
 import xyz.aimcup.auction.domain.port.in.AuctionControlUseCase;
 import xyz.aimcup.auction.domain.port.in.BiddingUseCase;
@@ -297,7 +298,14 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                         .filter(a -> channelId.equals(a.getChannelId()))
                         .findFirst()
                         .orElse(null))
-                .subscribeOn(engineScheduler);
+                .subscribeOn(engineScheduler)
+                // Before it starts, an auction is not in the engine, so /ready (used pre-start) found
+                // nothing and the bot stayed silent. Fall back to a SCHEDULED auction on this channel
+                // from the store. RUNNING/PAUSED auctions are deliberately excluded: they are owned by
+                // whichever instance holds them in memory, so a non-owning instance must stay silent.
+                .switchIfEmpty(auctionRepository.findByChannelId(channelId)
+                        .filter(a -> a.getState() == AuctionState.SCHEDULED)
+                        .next());
     }
 
     // ====================================================================================
@@ -432,6 +440,35 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         });
     }
 
+    @Override
+    public Mono<Void> removeCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId) {
+        RunningAuction ra = running.get(auctionId);
+        if (ra != null) {
+            // Live auction: only an organizer, and only while paused.
+            return onEngine(() -> {
+                requireManager(ra.auction, actingOsuId);
+                if (ra.auction.getState() != AuctionState.PAUSED) {
+                    throw new ConflictException("A proxy can only be removed while the auction is paused");
+                }
+                Captain captain = ra.auction.findCaptain(captainId)
+                        .orElseThrow(() -> new NotFoundException("Captain not found"));
+                captain.setProxy(null);
+                persistAsync(ra.auction);
+                broadcast(ra);
+            });
+        }
+        // Not active in the engine (scheduled): a plain organizer edit off the engine thread.
+        return auctionRepository.findById(auctionId)
+                .switchIfEmpty(Mono.error(new NotFoundException("Auction not found")))
+                .flatMap(auction -> {
+                    requireManager(auction, actingOsuId);
+                    Captain captain = auction.findCaptain(captainId)
+                            .orElseThrow(() -> new NotFoundException("Captain not found"));
+                    captain.setProxy(null);
+                    return auctionRepository.save(auction).then();
+                });
+    }
+
     // ====================================================================================
     //  Bidding use case
     // ====================================================================================
@@ -462,6 +499,12 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         AuctionSettings s = ra.auction.getSettings();
         if (s.getMaxTeamSize() > 0 && captain.teamSize() >= s.getMaxTeamSize()) {
             return BidResult.rejected("Your team is full (" + s.getMaxTeamSize() + " players)", ra.highestBid);
+        }
+        // A captain who already holds the top bid may not raise their own bid — another captain must bid
+        // first. During the max-bid window this is also covered by the one-max-bid-per-captain rule.
+        if (ra.highestBidderId != null && ra.highestBidderId.equals(captain.getId())) {
+            return BidResult.rejected("You're already the highest bidder — wait for another captain to bid",
+                    ra.highestBid);
         }
         int bid = forceMax ? s.getMaxBid() : requested;
         boolean isMax = bid == s.getMaxBid();
@@ -560,7 +603,10 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         ra.phase = AuctionPhase.MAX_BID_WINDOW;
         ra.maxBidWinnerId = null;
         ra.message = "Max bid! Other captains can counter with their own max bid before the draw.";
-        int seconds = Math.max(1, ra.auction.getSettings().getMaxBidWindowSeconds());
+        // A legacy auction saved before this setting existed deserializes the window to 0; treat that
+        // (and any non-positive value) as the default rather than a degenerate sub-second window.
+        int configured = ra.auction.getSettings().getMaxBidWindowSeconds();
+        int seconds = configured > 0 ? configured : 10;
         scheduleDeadline(ra, seconds, () -> onMaxBidWindowDeadline(ra));
         broadcast(ra);
     }
@@ -595,15 +641,35 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
     }
 
     private Captain resolveCaptainInAuction(Auction auction, BidActor actor) {
-        if (actor.osuId() != null) {
-            return auction.getCaptains().stream()
-                    .filter(c -> c.getOsuId() != null && c.getOsuId().equals(actor.osuId()))
-                    .findFirst().orElse(null);
+        // A captain with an active proxy is represented ONLY by that proxy: match proxies first so the
+        // proxy's identity resolves to the captain. A captain who has a proxy is then skipped for
+        // own-identity matching — they are locked out while the proxy acts, so the two can never bid at
+        // the same moment.
+        for (Captain c : auction.getCaptains()) {
+            if (c.getProxy() != null && proxyMatches(c.getProxy(), actor)) {
+                return c;
+            }
         }
-        if (actor.discordId() != null) {
-            return auction.findCaptainByDiscordId(actor.discordId()).orElse(null);
+        for (Captain c : auction.getCaptains()) {
+            if (c.getProxy() == null && ownMatches(c, actor)) {
+                return c;
+            }
         }
         return null;
+    }
+
+    private boolean proxyMatches(ProxyBidder proxy, BidActor actor) {
+        if (actor.osuId() != null && actor.osuId().equals(proxy.getOsuId())) {
+            return true;
+        }
+        return actor.discordId() != null && actor.discordId().equals(proxy.getDiscordId());
+    }
+
+    private boolean ownMatches(Captain c, BidActor actor) {
+        if (actor.osuId() != null && actor.osuId().equals(c.getOsuId())) {
+            return true;
+        }
+        return actor.discordId() != null && actor.discordId().equals(c.getDiscordId());
     }
 
     // ====================================================================================
@@ -727,9 +793,9 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
     }
 
     private void afterPlayer(RunningAuction ra) {
-        // The player has resolved — clear the max-bid draw state so the GAP/PAUSED snapshot is clean.
+        // The player has resolved. Clear the draw pool now, but keep maxBidWinnerId through the GAP so
+        // the winner stays highlighted after the reveal lands; it is cleared when the next player opens.
         ra.maxBidders.clear();
-        ra.maxBidWinnerId = null;
         if (ra.pauseRequested) {
             enterPaused(ra);
         } else {
@@ -752,6 +818,8 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         ra.highestBidderId = null;
         ra.highestBidderUsername = null;
         ra.bidHistory = new ArrayList<>();
+        // The reveal/highlight window is over; drop the winner before the next player comes up.
+        ra.maxBidWinnerId = null;
         nextPlayer(ra);
     }
 
@@ -771,31 +839,54 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
             Collections.shuffle(ids);
             ra.queue = new ArrayDeque<>(ids);
             persistAsync(ra.auction);
-            log.info("Auction {} advancing to stage {} with {} unsold players",
+            log.info("Auction {} reached the break before stage {} with {} unsold players",
                     ra.auction.getId(), nextStage + 1, ids.size());
-            enterGap(ra, false);
+            // Halt between stages: the organizer restarts and captains re-confirm ready before it runs.
+            enterStageBreak(ra, nextStage + 1);
         } else {
             finishAuction(ra);
         }
     }
 
     private void enterPaused(RunningAuction ra) {
+        parkPaused(ra, "Auction paused by an organizer — it will resume shortly");
+    }
+
+    /**
+     * Parks a running auction in the PAUSED state: clears the current player/bid, resets every
+     * captain's readiness (they must re-confirm before it resumes) and cancels the timer. The player
+     * queue is left intact so resume continues where it left off. Used both for an organizer pause and
+     * for the break between stages (which only differ in the status message).
+     */
+    private void parkPaused(RunningAuction ra, String message) {
         ra.auction.setState(AuctionState.PAUSED);
         ra.phase = AuctionPhase.PAUSED;
         ra.pauseRequested = false;
-        // Captains must re-confirm readiness before the auction resumes.
         ra.auction.getCaptains().forEach(c -> c.setReady(false));
         ra.currentPlayerId = null;
         ra.highestBid = 0;
         ra.highestBidderId = null;
+        ra.highestBidderUsername = null;
+        ra.bidHistory = new ArrayList<>();
         ra.maxBidders.clear();
         ra.maxBidWinnerId = null;
         ra.phaseEndsAtEpochMs = 0;
-        ra.message = "Auction paused by an organizer — it will resume shortly";
+        ra.message = message;
         cancelDeadline(ra);
         persistAsync(ra.auction);
         discord.auctionPaused(ra.auction).subscribe();
         broadcast(ra);
+    }
+
+    /**
+     * The break between two stages: the next stage's pool has already been prepared and shuffled onto
+     * {@code ra.queue}, but the auction halts (PAUSED) until an organizer resumes and captains
+     * re-confirm readiness — the same requirements as the pre-start gate. Resuming picks up straight
+     * from the prepared queue, so it flows into the next stage.
+     */
+    private void enterStageBreak(RunningAuction ra, int nextStageNumber) {
+        parkPaused(ra, "Stage " + nextStageNumber + " is ready — an organizer must start it and captains"
+                + " must re-confirm they're ready");
     }
 
     private void finishAuction(RunningAuction ra) {

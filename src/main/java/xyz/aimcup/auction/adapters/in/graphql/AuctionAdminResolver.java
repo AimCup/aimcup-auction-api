@@ -174,4 +174,15 @@ public class AuctionAdminResolver {
         return adminUseCase.unsetCaptain(user.osuId(), UUID.fromString(auctionId), UUID.fromString(playerId))
                 .map(GraphQlMapper::toDto);
     }
+
+    @MutationMapping
+    public Mono<GraphQlDtos.AuctionDto> setCaptainProxy(
+            @Argument String auctionId,
+            @Argument GraphQlInputs.SetProxyInput input,
+            @ContextValue(name = AuthContext.KEY, required = false) AuthenticatedUser principal) {
+        AuthenticatedUser user = AuthContext.require(principal);
+        return adminUseCase.setCaptainProxy(user.osuId(), UUID.fromString(auctionId),
+                        UUID.fromString(input.captainId()), input.osuId(), input.discordId())
+                .map(GraphQlMapper::toDto);
+    }
 }

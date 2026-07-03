@@ -30,8 +30,12 @@ public class AuctionSettings {
     /**
      * Seconds the auction waits after the first max bid for other captains to counter with their own
      * max bid. When the window closes the winner is drawn at random from everyone who maxed, so a max
-     * bid is no longer first-come-first-served. {@code @Builder.Default} means a legacy document
-     * missing this key deserializes to 10 (the sensible default) rather than 0.
+     * bid is no longer first-come-first-served.
+     *
+     * <p>New auctions get 10 via {@link #defaults()} / the builder. A legacy document saved before this
+     * field existed deserializes to 0 (Lombok's {@code @Builder.Default} does not apply on the no-arg
+     * constructor Spring Data uses); the engine treats a non-positive window as the 10s default, and the
+     * settings form normalises 0 → 10 on the next save.
      */
     @Builder.Default
     private int maxBidWindowSeconds = 10;

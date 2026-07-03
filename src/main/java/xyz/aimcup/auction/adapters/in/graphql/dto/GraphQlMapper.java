@@ -9,6 +9,7 @@ import xyz.aimcup.auction.domain.model.ChatMessage;
 import xyz.aimcup.auction.domain.model.LiveAuctionState;
 import xyz.aimcup.auction.domain.model.Manager;
 import xyz.aimcup.auction.domain.model.Player;
+import xyz.aimcup.auction.domain.model.ProxyBidder;
 import xyz.aimcup.auction.domain.model.User;
 import xyz.aimcup.auction.domain.port.in.command.BidResult;
 import xyz.aimcup.auction.domain.port.in.command.ImportPlayersResult;
@@ -96,7 +97,12 @@ public final class GraphQlMapper {
         return new GraphQlDtos.CaptainDto(
                 id(c.getId()), id(c.getPlayerId()), nz(c.getOsuId()), c.getUsername(), c.getAvatarUrl(),
                 c.getCountryCode(), c.getDiscordId(), c.getBalance(), c.isReady(),
-                c.getTeamPlayerIds() == null ? List.of() : c.getTeamPlayerIds().stream().map(GraphQlMapper::id).toList());
+                c.getTeamPlayerIds() == null ? List.of() : c.getTeamPlayerIds().stream().map(GraphQlMapper::id).toList(),
+                c.getProxy() == null ? null : toDto(c.getProxy()));
+    }
+
+    public static GraphQlDtos.ProxyDto toDto(ProxyBidder p) {
+        return new GraphQlDtos.ProxyDto(nz(p.getOsuId()), p.getUsername(), p.getAvatarUrl(), p.getDiscordId());
     }
 
     public static GraphQlDtos.BidEventDto toDto(BidEvent b) {

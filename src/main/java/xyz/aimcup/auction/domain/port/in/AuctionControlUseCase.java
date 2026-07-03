@@ -30,4 +30,10 @@ public interface AuctionControlUseCase {
 
     /** Overrides a captain's balance. */
     Mono<Void> changeCaptainBalance(long actingOsuId, UUID auctionId, UUID captainId, int newBalance);
+
+    /**
+     * Revokes a captain's proxy. Organizer only. While the auction is running this is allowed only
+     * when it is paused; before it starts (scheduled) it is a normal edit.
+     */
+    Mono<Void> removeCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId);
 }

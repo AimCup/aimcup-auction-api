@@ -58,4 +58,7 @@ public final class GraphQlInputs {
 
     public record ChangeBalanceInput(String captainId, int balance) {
     }
+
+    public record SetProxyInput(String captainId, long osuId, String discordId) {
+    }
 }
