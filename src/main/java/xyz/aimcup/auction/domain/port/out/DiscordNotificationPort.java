@@ -28,6 +28,9 @@ public interface DiscordNotificationPort {
 
     Mono<Void> auctionResumed(Auction auction);
 
+    /** The auction reached the break before the given (1-based) stage; captains must re-confirm ready. */
+    Mono<Void> stageBreak(Auction auction, int nextStageNumber);
+
     Mono<Void> auctionFinished(Auction auction);
 
     /** A captain confirmed (or cleared) readiness; broadcasts the live ready counter to the channel. */

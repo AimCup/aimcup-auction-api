@@ -82,4 +82,4 @@ auction:
     phase1-duration-minutes: ${AUCTION_REMINDER_PHASE1_DURATION_MINUTES:30}
     phase1-interval-minutes: ${AUCTION_REMINDER_PHASE1_INTERVAL_MINUTES:15}
     phase2-interval-minutes: ${AUCTION_REMINDER_PHASE2_INTERVAL_MINUTES:10}
-    after-start-interval-minutes: ${AUCTION_REMINDER_AFTER_START_INTERVAL_MINUTES:1}
+    after-start-interval-minutes: ${AUCTION_REMINDER_AFTER_START_INTERVAL_MINUTES:3}

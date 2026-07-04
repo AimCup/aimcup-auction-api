@@ -197,6 +197,16 @@ public class DiscordGateway implements DiscordNotificationPort {
     }
 
     @Override
+    public Mono<Void> stageBreak(Auction auction, int nextStageNumber) {
+        return sendEmbed(auction, EmbedCreateSpec.builder()
+                .color(GOLD)
+                .title("Stage complete — break before stage " + nextStageNumber)
+                .description("The next stage is ready. An organizer must start it, and captains must"
+                        + " re-confirm with /ready.")
+                .build());
+    }
+
+    @Override
     public Mono<Void> auctionFinished(Auction auction) {
         return sendEmbed(auction, EmbedCreateSpec.builder()
                 .color(BLURPLE)

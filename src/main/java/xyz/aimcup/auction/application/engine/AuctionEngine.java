@@ -23,6 +23,7 @@ import xyz.aimcup.auction.domain.model.AuctionState;
 import xyz.aimcup.auction.domain.model.BidEvent;
 import xyz.aimcup.auction.domain.model.Captain;
 import xyz.aimcup.auction.domain.model.LiveAuctionState;
+import xyz.aimcup.auction.domain.model.OsuUserProfile;
 import xyz.aimcup.auction.domain.model.Player;
 import xyz.aimcup.auction.domain.model.PlayerStatus;
 import xyz.aimcup.auction.domain.model.ProxyBidder;
@@ -36,6 +37,7 @@ import xyz.aimcup.auction.domain.port.in.command.ReadyResult;
 import xyz.aimcup.auction.domain.port.out.AuctionRepositoryPort;
 import xyz.aimcup.auction.domain.port.out.DiscordNotificationPort;
 import xyz.aimcup.auction.domain.port.out.LiveStatePort;
+import xyz.aimcup.auction.domain.port.out.OsuApiPort;
 import xyz.aimcup.auction.security.PresenceTracker;
 
 import java.time.Duration;
@@ -78,6 +80,7 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
     private final DiscordNotificationPort discord;
     private final PresenceTracker presence;
     private final AuctionProperties properties;
+    private final OsuApiPort osuApi;
 
     /**
      * How long the "which captain wins" reveal lasts after the max-bid window closes. Fixed (not
@@ -94,12 +97,13 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
 
     public AuctionEngine(AuctionRepositoryPort auctionRepository, LiveStatePort liveStatePort,
                          DiscordNotificationPort discord, PresenceTracker presence,
-                         AuctionProperties properties) {
+                         AuctionProperties properties, OsuApiPort osuApi) {
         this.auctionRepository = auctionRepository;
         this.liveStatePort = liveStatePort;
         this.discord = discord;
         this.presence = presence;
         this.properties = properties;
+        this.osuApi = osuApi;
     }
 
     @PostConstruct
@@ -441,6 +445,56 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
     }
 
     @Override
+    public Mono<Auction> setCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId,
+                                         long proxyOsuId, String proxyDiscordId) {
+        String proxyDiscord = blankToNull(proxyDiscordId);
+        RunningAuction ra = running.get(auctionId);
+        if (ra != null) {
+            // Live auction: organizer, and only while paused. Validate on the engine thread, fetch the
+            // proxy's osu! profile off it, then apply the change back on the engine thread and broadcast.
+            return Mono.fromCallable(() -> {
+                        requireManager(ra.auction, actingOsuId);
+                        if (ra.auction.getState() != AuctionState.PAUSED) {
+                            throw new ConflictException("A proxy can only be assigned while the auction is paused");
+                        }
+                        requireCaptain(ra.auction, captainId);
+                        validateProxyIdentity(ra.auction, captainId, proxyOsuId, proxyDiscord);
+                        return true;
+                    })
+                    .subscribeOn(engineScheduler)
+                    .then(osuApi.fetchUser(proxyOsuId))
+                    .flatMap(profile -> Mono.fromCallable(() -> {
+                        // Re-check on the engine thread: the auction could have been resumed during the
+                        // (off-thread) osu! profile fetch, and a proxy may only change while paused.
+                        if (ra.auction.getState() != AuctionState.PAUSED) {
+                            throw new ConflictException("A proxy can only be assigned while the auction is paused");
+                        }
+                        requireCaptain(ra.auction, captainId)
+                                .setProxy(proxyOf(proxyOsuId, proxyDiscord, profile));
+                        persistAsync(ra.auction);
+                        broadcast(ra);
+                        return ra.auction;
+                    }).subscribeOn(engineScheduler));
+        }
+        // Not live in the engine (scheduled): a plain organizer edit off the engine thread.
+        return auctionRepository.findById(auctionId)
+                .switchIfEmpty(Mono.error(new NotFoundException("Auction not found")))
+                .flatMap(auction -> {
+                    requireManager(auction, actingOsuId);
+                    if (auction.getState() != AuctionState.SCHEDULED) {
+                        throw new ConflictException(
+                                "A proxy can only be assigned before the auction starts or while it is paused");
+                    }
+                    requireCaptain(auction, captainId);
+                    validateProxyIdentity(auction, captainId, proxyOsuId, proxyDiscord);
+                    return osuApi.fetchUser(proxyOsuId).flatMap(profile -> {
+                        requireCaptain(auction, captainId).setProxy(proxyOf(proxyOsuId, proxyDiscord, profile));
+                        return auctionRepository.save(auction);
+                    });
+                });
+    }
+
+    @Override
     public Mono<Void> removeCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId) {
         RunningAuction ra = running.get(auctionId);
         if (ra != null) {
@@ -462,6 +516,9 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                 .switchIfEmpty(Mono.error(new NotFoundException("Auction not found")))
                 .flatMap(auction -> {
                     requireManager(auction, actingOsuId);
+                    if (auction.getState() == AuctionState.FINISHED) {
+                        throw new ConflictException("The auction has finished");
+                    }
                     Captain captain = auction.findCaptain(captainId)
                             .orElseThrow(() -> new NotFoundException("Captain not found"));
                     captain.setProxy(null);
@@ -859,6 +916,10 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
      * for the break between stages (which only differ in the status message).
      */
     private void parkPaused(RunningAuction ra, String message) {
+        parkPaused(ra, message, true);
+    }
+
+    private void parkPaused(RunningAuction ra, String message, boolean notifyPaused) {
         ra.auction.setState(AuctionState.PAUSED);
         ra.phase = AuctionPhase.PAUSED;
         ra.pauseRequested = false;
@@ -874,7 +935,10 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         ra.message = message;
         cancelDeadline(ra);
         persistAsync(ra.auction);
-        discord.auctionPaused(ra.auction).subscribe();
+        // A stage break is also PAUSED but is not an organizer pause — it sends its own Discord notice.
+        if (notifyPaused) {
+            discord.auctionPaused(ra.auction).subscribe();
+        }
         broadcast(ra);
     }
 
@@ -886,7 +950,8 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
      */
     private void enterStageBreak(RunningAuction ra, int nextStageNumber) {
         parkPaused(ra, "Stage " + nextStageNumber + " is ready — an organizer must start it and captains"
-                + " must re-confirm they're ready");
+                + " must re-confirm they're ready", false);
+        discord.stageBreak(ra.auction, nextStageNumber).subscribe();
     }
 
     private void finishAuction(RunningAuction ra) {
@@ -968,6 +1033,43 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
         if (!auction.isManager(osuId) && !auction.isOwner(osuId)) {
             throw new ForbiddenException("You are not a manager of this auction");
         }
+    }
+
+    private Captain requireCaptain(Auction auction, UUID captainId) {
+        return auction.findCaptain(captainId)
+                .orElseThrow(() -> new NotFoundException("Captain not found"));
+    }
+
+    private ProxyBidder proxyOf(long osuId, String discordId, OsuUserProfile profile) {
+        return ProxyBidder.builder()
+                .osuId(osuId)
+                .discordId(discordId)
+                .username(profile.username())
+                .avatarUrl(profile.avatarUrl())
+                .build();
+    }
+
+    /** A proxy must be a distinct identity: not a player/captain, and not another captain's proxy. */
+    private void validateProxyIdentity(Auction auction, UUID captainId, long proxyOsuId, String proxyDiscord) {
+        if (auction.findPlayerByOsuId(proxyOsuId).isPresent()) {
+            throw new BadRequestException("The proxy cannot be a player already in this auction");
+        }
+        boolean osuTaken = auction.getCaptains().stream().anyMatch(c -> !c.getId().equals(captainId)
+                && c.getProxy() != null && c.getProxy().getOsuId() != null
+                && c.getProxy().getOsuId() == proxyOsuId);
+        if (osuTaken) {
+            throw new BadRequestException("That osu! id is already a proxy for another captain");
+        }
+        if (proxyDiscord != null && auction.getCaptains().stream().anyMatch(c ->
+                proxyDiscord.equals(c.getDiscordId())
+                        || (c.getProxy() != null && !c.getId().equals(captainId)
+                        && proxyDiscord.equals(c.getProxy().getDiscordId())))) {
+            throw new BadRequestException("That Discord id already belongs to a captain or another proxy");
+        }
+    }
+
+    private String blankToNull(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     // ====================================================================================

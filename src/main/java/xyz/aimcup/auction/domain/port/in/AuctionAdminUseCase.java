@@ -46,12 +46,4 @@ public interface AuctionAdminUseCase {
     Mono<Player> setCaptain(long actingOsuId, UUID auctionId, UUID playerId, String discordId);
 
     Mono<Player> unsetCaptain(long actingOsuId, UUID auctionId, UUID playerId);
-
-    /**
-     * Assigns (or replaces) a proxy that acts on a captain's behalf. Organizer only, before the
-     * auction starts. The proxy is identified by its own osu! id (+ optional Discord id) and must not
-     * already be a player in the auction.
-     */
-    Mono<Auction> setCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId, long proxyOsuId,
-                                  String proxyDiscordId);
 }
