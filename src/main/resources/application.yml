@@ -7,7 +7,16 @@ spring:
     default: dev
   data:
     mongodb:
-      uri: ${SPRING_DATA_MONGODB_URI:mongodb://root:password@localhost:11002/auction?authSource=admin}
+      # Discrete connection properties instead of a single `uri`: Spring Boot URL-encodes the
+      # username/password when it assembles the connection string, so credentials may safely contain
+      # RFC 3986 reserved characters (e.g. '/'). Interpolating a raw password into a hand-built URI
+      # breaks parsing ("port contains non-digit characters"), which is why the URI form was dropped.
+      host: ${SPRING_DATA_MONGODB_HOST:localhost}
+      port: ${SPRING_DATA_MONGODB_PORT:11002}
+      username: ${SPRING_DATA_MONGODB_USERNAME:root}
+      password: ${SPRING_DATA_MONGODB_PASSWORD:password}
+      database: ${SPRING_DATA_MONGODB_DATABASE:auction}
+      authentication-database: ${SPRING_DATA_MONGODB_AUTHENTICATION_DATABASE:admin}
       auto-index-creation: true
     redis:
       host: ${SPRING_DATA_REDIS_HOST:localhost}
