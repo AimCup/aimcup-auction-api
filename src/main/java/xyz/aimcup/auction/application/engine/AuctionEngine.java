@@ -175,11 +175,10 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
                 .filter(p -> p.getStatus() == PlayerStatus.AVAILABLE)
                 .map(Player::getId)
                 .toList());
-        // Stages after the first re-auction their pool in random order (see onStageComplete); keep that
-        // property on recovery so a mid-stage restart doesn't silently fall back to a fixed ordering.
-        if (ra.stageIndex > 0) {
-            Collections.shuffle(remaining);
-        }
+        // Always re-auction the remaining pool in random order on recovery (matching doStart and
+        // onStageComplete) so a restart — including one during the first stage — never falls back to the
+        // uploaded player-list order and never lets participants predict who is next.
+        Collections.shuffle(remaining);
         ra.queue = new ArrayDeque<>(remaining);
         ra.phase = AuctionPhase.PAUSED;
         ra.currentPlayerId = null;
@@ -357,7 +356,13 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
 
         RunningAuction ra = new RunningAuction(auction, sinkFor(auction.getId()));
         ra.stageIndex = 0;
-        ra.queue = new ArrayDeque<>(auction.auctionablePlayers().stream().map(Player::getId).toList());
+        // Randomize the first stage's bidding order so participants can't predict who is next from the
+        // uploaded player-list order (stage transitions and recovery already shuffle their pools).
+        List<UUID> startIds = new ArrayList<>(auction.auctionablePlayers().stream()
+                .map(Player::getId)
+                .toList());
+        Collections.shuffle(startIds);
+        ra.queue = new ArrayDeque<>(startIds);
         running.put(auction.getId(), ra);
         lastReminderSent.remove(auction.getId());
 
@@ -422,9 +427,13 @@ public class AuctionEngine implements AuctionControlUseCase, BiddingUseCase, Rea
             player.setSoldToCaptainId(null);
             player.setSoldPrice(null);
             // Return the player to the current stage's pool so they can be re-auctioned right away
-            // (rather than waiting for the next stage). Skip if somehow already queued.
+            // (rather than waiting for the next stage). Skip if somehow already queued. Re-insert at a
+            // random position (not a fixed tail slot) so their next-up spot stays unpredictable.
             if (!ra.queue.contains(playerId)) {
-                ra.queue.addLast(playerId);
+                List<UUID> pending = new ArrayList<>(ra.queue);
+                pending.add(playerId);
+                Collections.shuffle(pending);
+                ra.queue = new ArrayDeque<>(pending);
             }
             persistAsync(ra.auction);
             broadcast(ra);
