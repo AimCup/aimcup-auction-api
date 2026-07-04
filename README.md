@@ -122,5 +122,8 @@ mutation createAuction, updateAuctionSettings, updateAuctionStages, updateAuctio
 subscription liveAuction(auctionId)   # the whole public page renders from this
 ```
 
-CSV import expects columns `username, osuId, description` (header optional); `username` and `osuId`
-are required, `description` may be empty. See `docs/sample-players.csv`.
+CSV import expects columns `username, osuId, description, qualificationRank, bestBeatmapUrl,
+bestBeatmapAccuracy, worstBeatmapUrl, worstBeatmapAccuracy` (header optional). `username`, `osuId`
+and `qualificationRank` are required; the description, beatmap URLs and accuracies may be empty.
+Fields with commas (e.g. a description) must be wrapped in double quotes. See
+`docs/sample-players.csv`.

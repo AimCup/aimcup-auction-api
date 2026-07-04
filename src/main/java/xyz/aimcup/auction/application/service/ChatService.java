@@ -7,6 +7,7 @@ import xyz.aimcup.auction.domain.model.ChatMessage;
 import xyz.aimcup.auction.domain.port.in.ChatQueryUseCase;
 import xyz.aimcup.auction.domain.port.in.ChatRelayUseCase;
 
+import java.time.Duration;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -28,7 +29,10 @@ public class ChatService implements ChatRelayUseCase, ChatQueryUseCase {
 
     @Override
     public void publish(UUID auctionId, ChatMessage message) {
-        sinkFor(auctionId).tryEmitNext(message);
+        // The Discord gateway relay can deliver messages from several gateway threads concurrently, so
+        // a plain tryEmitNext could hit FAIL_NON_SERIALIZED and silently drop a message. Busy-loop
+        // briefly on contention instead; it resolves in microseconds, the timeout is only a backstop.
+        sinkFor(auctionId).emitNext(message, Sinks.EmitFailureHandler.busyLooping(Duration.ofMillis(100)));
     }
 
     @Override

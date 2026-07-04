@@ -15,9 +15,11 @@ public final class GraphQlInputs {
             int startingBalance,
             int maxBid,
             int minIncrement,
+            int maxBidWindowSeconds,
             int teamSizeForPercentLimit,
             int maxBidPercent,
-            int maxDescriptionLength
+            int maxDescriptionLength,
+            int maxTeamSize
     ) {
     }
 
@@ -55,5 +57,8 @@ public final class GraphQlInputs {
     }
 
     public record ChangeBalanceInput(String captainId, int balance) {
+    }
+
+    public record SetProxyInput(String captainId, long osuId, String discordId) {
     }
 }

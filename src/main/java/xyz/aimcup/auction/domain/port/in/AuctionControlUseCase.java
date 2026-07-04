@@ -1,6 +1,7 @@
 package xyz.aimcup.auction.domain.port.in;
 
 import reactor.core.publisher.Mono;
+import xyz.aimcup.auction.domain.model.Auction;
 
 import java.util.UUID;
 
@@ -30,4 +31,18 @@ public interface AuctionControlUseCase {
 
     /** Overrides a captain's balance. */
     Mono<Void> changeCaptainBalance(long actingOsuId, UUID auctionId, UUID captainId, int newBalance);
+
+    /**
+     * Assigns (or replaces) the proxy that acts on a captain's behalf. Organizer only, and only while
+     * the auction is scheduled (before start) or paused. The proxy is identified by its own osu! id
+     * (+ optional Discord id) and must not already be a player or another captain's proxy.
+     */
+    Mono<Auction> setCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId, long proxyOsuId,
+                                  String proxyDiscordId);
+
+    /**
+     * Revokes a captain's proxy. Organizer only. While the auction is running this is allowed only
+     * when it is paused; before it starts (scheduled) it is a normal edit.
+     */
+    Mono<Void> removeCaptainProxy(long actingOsuId, UUID auctionId, UUID captainId);
 }

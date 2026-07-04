@@ -108,7 +108,15 @@ public class DiscordCommandRouter {
         String channelId = event.getInteraction().getChannelId().asString();
         String discordId = event.getInteraction().getUser().getId().asString();
         return channelLookup.findActiveByChannelId(channelId)
-                .switchIfEmpty(reply(event, "There is no active auction in this channel.").then(Mono.empty()))
+                // No active auction in THIS instance: stay silent instead of replying "no active
+                // auction". The same bot token can be connected from more than one instance
+                // (e.g. a local dev run and the deployed env, or next + prod); every instance
+                // receives the interaction, but only the one actually running the auction can place
+                // the bid. Replying here produced the confusing "no active auction" while the bid
+                // still went through on the owning instance.
+                .switchIfEmpty(Mono.<Auction>fromRunnable(() -> log.debug(
+                        "Ignoring /{} in channel {}: no auction is active on this instance",
+                        event.getCommandName(), channelId)))
                 .flatMap(auction -> dispatch(event, auction, discordId))
                 .onErrorResume(e -> reply(event, e.getMessage()));
     }

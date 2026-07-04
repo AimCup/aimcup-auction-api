@@ -4,10 +4,12 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * A single message relayed from the Discord channel linked to an auction, surfaced on the stream
- * overlay's live feed. {@link #author} is the sender's <em>server nickname</em> (falling back to
- * their global username). When the message carries a rich embed it is preserved in {@link #embed}
- * so the overlay can render it one-to-one with how it appears in Discord.
+ * A single message shown on an auction's live feed (stream overlay + public page). Every message is
+ * relayed from the linked Discord channel.
+ *
+ * <p>{@link #author} is the sender's display name (the Discord server nickname). When the message
+ * carries a rich embed it is preserved in {@link #embed} so the overlay can render it one-to-one with
+ * how it appears in Discord.
  */
 public record ChatMessage(
         String author,

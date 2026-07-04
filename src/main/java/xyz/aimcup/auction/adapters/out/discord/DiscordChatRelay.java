@@ -51,6 +51,16 @@ public class DiscordChatRelay {
     }
 
     private Mono<Void> handle(MessageCreateEvent event) {
+        // Drop the bot's own plain-text messages while keeping its embeds (bid/sold notifications) so
+        // the feed still mirrors the channel. The bot currently posts only embeds, so this guard rarely
+        // fires; it is kept defensively so any future plain-text bot post is never echoed into the feed.
+        boolean ownEcho = event.getMessage().getAuthor()
+                .map(a -> a.getId().equals(event.getClient().getSelfId()))
+                .orElse(false)
+                && event.getMessage().getEmbeds().isEmpty();
+        if (ownEcho) {
+            return Mono.empty();
+        }
         ChatMessage chat = toChatMessage(event);
         if (chat == null) {
             return Mono.empty();

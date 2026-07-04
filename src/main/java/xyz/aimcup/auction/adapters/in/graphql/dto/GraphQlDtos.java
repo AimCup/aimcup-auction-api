@@ -41,9 +41,11 @@ public final class GraphQlDtos {
             int startingBalance,
             int maxBid,
             int minIncrement,
+            int maxBidWindowSeconds,
             int teamSizeForPercentLimit,
             int maxBidPercent,
-            int maxDescriptionLength
+            int maxDescriptionLength,
+            int maxTeamSize
     ) {
     }
 
@@ -102,8 +104,12 @@ public final class GraphQlDtos {
             String discordId,
             int balance,
             boolean ready,
-            List<String> teamPlayerIds
+            List<String> teamPlayerIds,
+            ProxyDto proxy
     ) {
+    }
+
+    public record ProxyDto(long osuId, String username, String avatarUrl, String discordId) {
     }
 
     public record BidEventDto(
@@ -127,6 +133,8 @@ public final class GraphQlDtos {
             int highestBid,
             String highestBidderId,
             String highestBidderUsername,
+            List<String> maxBidderIds,
+            String maxBidWinnerId,
             List<BidEventDto> bidHistory,
             double phaseEndsAtEpochMs,
             boolean pausedByOrganizer,

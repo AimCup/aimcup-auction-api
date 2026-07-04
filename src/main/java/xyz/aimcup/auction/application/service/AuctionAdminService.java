@@ -3,7 +3,6 @@ package xyz.aimcup.auction.application.service;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import xyz.aimcup.auction.domain.exception.BadRequestException;
 import xyz.aimcup.auction.domain.exception.ConflictException;
@@ -15,6 +14,7 @@ import xyz.aimcup.auction.domain.model.AuctionStage;
 import xyz.aimcup.auction.domain.model.AuctionState;
 import xyz.aimcup.auction.domain.model.Captain;
 import xyz.aimcup.auction.domain.model.Manager;
+import xyz.aimcup.auction.domain.model.OsuBeatmap;
 import xyz.aimcup.auction.domain.model.OsuUserProfile;
 import xyz.aimcup.auction.domain.model.Player;
 import xyz.aimcup.auction.domain.model.PlayerStatus;
@@ -30,11 +30,16 @@ import xyz.aimcup.auction.domain.port.out.UserRepositoryPort;
 
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * Pre-auction configuration: creating auctions, adding managers/players, CSV import and flagging
@@ -109,6 +114,9 @@ public class AuctionAdminService implements AuctionAdminUseCase {
         if (s.getMinIncrement() <= 0) {
             throw new BadRequestException("Minimum increment must be positive");
         }
+        if (s.getMaxBidWindowSeconds() < 1 || s.getMaxBidWindowSeconds() > 120) {
+            throw new BadRequestException("Max bid window must be between 1 and 120 seconds");
+        }
         if (s.getMaxBidPercent() < 1 || s.getMaxBidPercent() > 100) {
             throw new BadRequestException("Max bid percent must be between 1 and 100");
         }
@@ -117,6 +125,10 @@ public class AuctionAdminService implements AuctionAdminUseCase {
         }
         if (s.getMaxDescriptionLength() < 1) {
             throw new BadRequestException("Description length must be positive");
+        }
+        if (s.getMaxTeamSize() < 1 || s.getMaxTeamSize() < s.getTeamSizeForPercentLimit()) {
+            throw new BadRequestException("Maximum team size must be at least "
+                    + Math.max(1, s.getTeamSizeForPercentLimit()));
         }
     }
 
@@ -296,63 +308,166 @@ public class AuctionAdminService implements AuctionAdminUseCase {
         return last;
     }
 
+    /**
+     * Bulk import. Rather than one osu! API call per row, this validates everything synchronously,
+     * collects all (distinct) osu! ids and beatmap ids, then fetches them with the BATCH endpoints
+     * ({@code GET /users}, {@code GET /beatmaps}, 50 ids/request) — so a 100-row CSV needs a handful
+     * of requests instead of hundreds. Players are then assembled from the in-memory result maps.
+     */
     @Override
     public Mono<ImportPlayersResult> importPlayers(long actingOsuId, UUID auctionId, List<ImportPlayerRow> rows) {
         return editable(auctionId, actingOsuId).flatMap(auction -> {
             int maxLen = auction.getSettings().getMaxDescriptionLength();
-            List<Player> imported = new ArrayList<>();
             List<ImportPlayersResult.RowError> errors = new ArrayList<>();
-            AtomicInteger line = new AtomicInteger(0);
-            return Flux.fromIterable(rows)
-                    .concatMap(row -> importRow(auction, row, line.incrementAndGet(), maxLen, imported, errors))
-                    .then(Mono.defer(() -> {
-                        if (imported.isEmpty()) {
-                            return Mono.just(new ImportPlayersResult(imported, errors));
-                        }
-                        return auctionRepository.save(auction)
-                                .thenReturn(new ImportPlayersResult(imported, errors));
-                    }));
+            List<ValidatedRow> valid = validateRows(auction, rows, maxLen, errors);
+            if (valid.isEmpty()) {
+                return Mono.just(new ImportPlayersResult(List.of(), errors));
+            }
+            List<Long> osuIds = valid.stream().map(ValidatedRow::osuId).distinct().toList();
+            List<Long> beatmapIds = valid.stream()
+                    .flatMap(v -> Stream.of(v.bestBeatmapId(), v.worstBeatmapId()))
+                    .filter(Objects::nonNull)
+                    .distinct()
+                    .toList();
+            // Degrade gracefully (as the old per-row import did): a total user-lookup/token failure
+            // falls back to an empty map so every row is reported as a per-row miss rather than
+            // erroring the whole mutation; beatmap enrichment is best-effort and never blocks import.
+            return Mono.zip(
+                            osuApi.fetchUsers(osuIds)
+                                    .onErrorResume(e -> {
+                                        log.warn("Batch osu! user lookup failed during import: {}", e.toString());
+                                        return Mono.just(Map.<Long, OsuUserProfile>of());
+                                    }),
+                            osuApi.fetchBeatmaps(beatmapIds)
+                                    .onErrorReturn(Map.<Long, OsuBeatmap>of()))
+                    .flatMap(t -> buildAndSave(auction, valid, t.getT1(), t.getT2(), errors));
         });
     }
 
-    private Mono<Void> importRow(Auction auction, ImportPlayerRow row, int line, int maxLen,
-                                 List<Player> imported, List<ImportPlayersResult.RowError> errors) {
-        if (row.username() == null || row.username().isBlank()) {
-            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "username is required"));
-            return Mono.empty();
+    /** Synchronous, I/O-free per-row validation; returns the rows that are ready to be fetched. */
+    private List<ValidatedRow> validateRows(Auction auction, List<ImportPlayerRow> rows, int maxLen,
+                                            List<ImportPlayersResult.RowError> errors) {
+        List<ValidatedRow> valid = new ArrayList<>();
+        Set<Long> seen = new HashSet<>();
+        int line = 0;
+        for (ImportPlayerRow row : rows) {
+            line++;
+            if (isBlank(row.username())) {
+                errors.add(rowError(line, row, "username is required"));
+                continue;
+            }
+            if (isBlank(row.osuId())) {
+                errors.add(rowError(line, row, "osuId is required"));
+                continue;
+            }
+            long osuId;
+            try {
+                osuId = Long.parseLong(row.osuId().trim());
+            } catch (NumberFormatException e) {
+                errors.add(rowError(line, row, "osuId must be numeric"));
+                continue;
+            }
+            if (isBlank(row.qualificationRank())) {
+                errors.add(rowError(line, row, "qualificationRank is required"));
+                continue;
+            }
+            int qualificationRank;
+            try {
+                qualificationRank = Integer.parseInt(row.qualificationRank().trim());
+            } catch (NumberFormatException e) {
+                errors.add(rowError(line, row, "qualificationRank must be a whole number"));
+                continue;
+            }
+            if (row.description() != null && row.description().length() > maxLen) {
+                errors.add(rowError(line, row, "description exceeds " + maxLen + " characters"));
+                continue;
+            }
+            Double bestAccuracy;
+            Double worstAccuracy;
+            try {
+                bestAccuracy = parseOptionalAccuracy(row.bestBeatmapAccuracy());
+                worstAccuracy = parseOptionalAccuracy(row.worstBeatmapAccuracy());
+            } catch (NumberFormatException e) {
+                errors.add(rowError(line, row, "accuracy must be a number"));
+                continue;
+            }
+            if (!seen.add(osuId) || auction.findPlayerByOsuId(osuId).isPresent()) {
+                errors.add(rowError(line, row, "already in the auction"));
+                continue;
+            }
+            AddPlayerCommand command = new AddPlayerCommand(osuId, row.description(),
+                    blankToNull(row.bestBeatmapUrl()), bestAccuracy,
+                    blankToNull(row.worstBeatmapUrl()), worstAccuracy, qualificationRank);
+            valid.add(new ValidatedRow(line, row, osuId, command,
+                    parseBeatmapId(row.bestBeatmapUrl()), parseBeatmapId(row.worstBeatmapUrl())));
         }
-        if (row.osuId() == null || row.osuId().isBlank()) {
-            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "osuId is required"));
-            return Mono.empty();
+        return valid;
+    }
+
+    /** Assembles players from the batch-fetched maps; a row whose user wasn't returned is a miss. */
+    private Mono<ImportPlayersResult> buildAndSave(Auction auction, List<ValidatedRow> valid,
+                                                   Map<Long, OsuUserProfile> users,
+                                                   Map<Long, OsuBeatmap> maps,
+                                                   List<ImportPlayersResult.RowError> errors) {
+        List<Player> imported = new ArrayList<>();
+        for (ValidatedRow v : valid) {
+            OsuUserProfile profile = users.get(v.osuId());
+            if (profile == null) {
+                errors.add(rowError(v.line(), v.raw(), "osu! lookup failed: user " + v.osuId() + " not found"));
+                continue;
+            }
+            Player player = playerFromProfile(profile, v.raw().description());
+            applyQualifiers(player, v.command(), v.bestBeatmapId(), v.worstBeatmapId(), maps);
+            auction.getPlayers().add(player);
+            imported.add(player);
         }
-        long osuId;
-        try {
-            osuId = Long.parseLong(row.osuId().trim());
-        } catch (NumberFormatException e) {
-            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "osuId must be numeric"));
-            return Mono.empty();
+        if (imported.isEmpty()) {
+            return Mono.just(new ImportPlayersResult(imported, errors));
         }
-        if (row.description() != null && row.description().length() > maxLen) {
-            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(),
-                    "description exceeds " + maxLen + " characters"));
-            return Mono.empty();
+        return auctionRepository.save(auction).thenReturn(new ImportPlayersResult(imported, errors));
+    }
+
+    /** Sets a player's qualifier fields from already-fetched beatmaps (no I/O; best-effort). */
+    private void applyQualifiers(Player player, AddPlayerCommand cmd, Long bestId, Long worstId,
+                                 Map<Long, OsuBeatmap> maps) {
+        player.setQualificationRank(cmd.qualificationRank());
+        player.setBestMapAccuracy(cmd.bestAccuracy());
+        player.setWorstMapAccuracy(cmd.worstAccuracy());
+        if (bestId != null) {
+            OsuBeatmap bm = maps.get(bestId);
+            if (bm != null) {
+                player.setBestMapName(bm.title());
+                player.setBestMapImage(bm.coverUrl());
+            }
         }
-        if (auction.findPlayerByOsuId(osuId).isPresent()) {
-            errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(), "already in the auction"));
-            return Mono.empty();
+        if (worstId != null) {
+            OsuBeatmap bm = maps.get(worstId);
+            if (bm != null) {
+                player.setWorstMapName(bm.title());
+                player.setWorstMapImage(bm.coverUrl());
+            }
         }
-        return osuApi.fetchUser(osuId)
-                .doOnNext(profile -> {
-                    Player player = playerFromProfile(profile, row.description());
-                    auction.getPlayers().add(player);
-                    imported.add(player);
-                })
-                .onErrorResume(e -> {
-                    errors.add(new ImportPlayersResult.RowError(line, row.osuId(), row.username(),
-                            "osu! lookup failed: " + e.getMessage()));
-                    return Mono.empty();
-                })
-                .then();
+    }
+
+    private static ImportPlayersResult.RowError rowError(int line, ImportPlayerRow row, String reason) {
+        return new ImportPlayersResult.RowError(line, row.osuId(), row.username(), reason);
+    }
+
+    /** A CSV row that passed validation, with parsed ids ready for the batch fetch. */
+    private record ValidatedRow(int line, ImportPlayerRow raw, long osuId, AddPlayerCommand command,
+                                Long bestBeatmapId, Long worstBeatmapId) {
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
+    }
+
+    /** Parses an optional accuracy cell; null/blank ⇒ null, otherwise a double (throws if not numeric). */
+    private static Double parseOptionalAccuracy(String value) {
+        if (isBlank(value)) {
+            return null;
+        }
+        return Double.parseDouble(value.trim());
     }
 
     private Player playerFromProfile(OsuUserProfile profile, String description) {

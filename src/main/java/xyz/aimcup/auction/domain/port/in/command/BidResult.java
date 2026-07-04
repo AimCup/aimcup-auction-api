@@ -10,6 +10,10 @@ public record BidResult(boolean accepted, String message, int currentHighest) {
         return new BidResult(true, "Bid accepted", currentHighest);
     }
 
+    public static BidResult accepted(String message, int currentHighest) {
+        return new BidResult(true, message, currentHighest);
+    }
+
     public static BidResult rejected(String message, int currentHighest) {
         return new BidResult(false, message, currentHighest);
     }

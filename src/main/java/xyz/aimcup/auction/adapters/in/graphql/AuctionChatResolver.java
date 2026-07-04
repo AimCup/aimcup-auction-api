@@ -12,12 +12,13 @@ import xyz.aimcup.auction.domain.port.in.ChatQueryUseCase;
 import java.util.UUID;
 
 /**
- * Streams the Discord channel messages relayed for an auction to the stream overlay. Public, like
- * the live-auction subscription.
+ * Live-feed chat for an auction. The {@code auctionChat} subscription streams the read-only feed
+ * (Discord relays + bot embeds) to anyone — it is public, like the overlay. Sending messages from the
+ * web has been removed; the feed mirrors the linked Discord channel only.
  */
 @Controller
 @RequiredArgsConstructor
-public class AuctionChatSubscriptionResolver {
+public class AuctionChatResolver {
 
     private final ChatQueryUseCase chatQueryUseCase;
 

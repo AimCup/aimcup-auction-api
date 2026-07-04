@@ -1,5 +1,5 @@
-username,osuId,description
-chocomint,124493,Legendary aim — former #1
-mrekk,7562902,Current top player, absurd consistency
-WhiteCat,4504101,High-tier aim control
-idke,2927048,Tournament veteran
+username,osuId,description,qualificationRank,bestBeatmapUrl,bestBeatmapAccuracy,worstBeatmapUrl,worstBeatmapAccuracy
+chocomint,124493,Legendary aim — former #1,1,https://osu.ppy.sh/beatmaps/5468482,99.21,https://osu.ppy.sh/beatmaps/5001883,94.10
+mrekk,7562902,"Current top player, absurd consistency",2,https://osu.ppy.sh/beatmaps/5516716,99.05,https://osu.ppy.sh/beatmaps/4886184,95.33
+WhiteCat,4504101,High-tier aim control,3,,,,
+idke,2927048,,4,https://osu.ppy.sh/beatmaps/5563887,97.42,https://osu.ppy.sh/beatmaps/5502188,90.88

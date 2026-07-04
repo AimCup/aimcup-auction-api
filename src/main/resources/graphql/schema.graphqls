@@ -6,15 +6,17 @@
 
 enum AuctionState { SCHEDULED RUNNING PAUSED FINISHED }
 enum PlayerStatus { AVAILABLE SOLD UNSOLD }
-enum AuctionPhase { WAITING_TO_START BIDDING GAP PAUSED FINISHED }
+enum AuctionPhase { WAITING_TO_START BIDDING MAX_BID_WINDOW MAX_BID_DRAW GAP PAUSED FINISHED }
 
 type AuctionSettings {
     startingBalance: Int!
     maxBid: Int!
     minIncrement: Int!
+    maxBidWindowSeconds: Int!
     teamSizeForPercentLimit: Int!
     maxBidPercent: Int!
     maxDescriptionLength: Int!
+    maxTeamSize: Int!
 }
 
 type AuctionStage {
@@ -70,6 +72,15 @@ type Captain {
     balance: Int!
     ready: Boolean!
     teamPlayerIds: [ID!]!
+    "When set, a proxy bids and confirms readiness on this captain's behalf."
+    proxy: CaptainProxy
+}
+
+type CaptainProxy {
+    osuId: Int!
+    username: String
+    avatarUrl: String
+    discordId: String
 }
 
 type BidEvent {
@@ -112,6 +123,8 @@ type LiveAuctionState {
     highestBid: Int!
     highestBidderId: ID
     highestBidderUsername: String
+    maxBidderIds: [ID!]!
+    maxBidWinnerId: ID
     bidHistory: [BidEvent!]!
     phaseEndsAtEpochMs: Float!
     pausedByOrganizer: Boolean!
@@ -199,9 +212,11 @@ input AuctionSettingsInput {
     startingBalance: Int!
     maxBid: Int!
     minIncrement: Int!
+    maxBidWindowSeconds: Int!
     teamSizeForPercentLimit: Int!
     maxBidPercent: Int!
     maxDescriptionLength: Int!
+    maxTeamSize: Int!
 }
 
 input StageInput {
@@ -243,6 +258,12 @@ input ChangeBalanceInput {
     balance: Int!
 }
 
+input SetProxyInput {
+    captainId: ID!
+    osuId: Int!
+    discordId: String
+}
+
 # ---- Operations ----------------------------------------------------------------------------
 
 type Query {
@@ -269,6 +290,10 @@ type Mutation {
     removePlayer(auctionId: ID!, playerId: ID!): Boolean!
     setCaptain(auctionId: ID!, input: FlagCaptainInput!): Player!
     unsetCaptain(auctionId: ID!, playerId: ID!): Player!
+    "Assign/replace the proxy that acts for a captain (organizer, before start)."
+    setCaptainProxy(auctionId: ID!, input: SetProxyInput!): Auction!
+    "Revoke a captain's proxy (organizer; while running only when paused)."
+    removeCaptainProxy(auctionId: ID!, captainId: ID!): Boolean!
 
     startAuction(auctionId: ID!): Boolean!
     pauseAuction(auctionId: ID!): Boolean!

@@ -75,6 +75,27 @@ public class AuctionControlResolver {
     }
 
     @MutationMapping
+    public Mono<Boolean> removeCaptainProxy(
+            @Argument String auctionId,
+            @Argument String captainId,
+            @ContextValue(name = AuthContext.KEY, required = false) AuthenticatedUser principal) {
+        AuthenticatedUser user = AuthContext.require(principal);
+        return controlUseCase.removeCaptainProxy(user.osuId(), UUID.fromString(auctionId),
+                UUID.fromString(captainId)).thenReturn(true);
+    }
+
+    @MutationMapping
+    public Mono<GraphQlDtos.AuctionDto> setCaptainProxy(
+            @Argument String auctionId,
+            @Argument GraphQlInputs.SetProxyInput input,
+            @ContextValue(name = AuthContext.KEY, required = false) AuthenticatedUser principal) {
+        AuthenticatedUser user = AuthContext.require(principal);
+        return controlUseCase.setCaptainProxy(user.osuId(), UUID.fromString(auctionId),
+                        UUID.fromString(input.captainId()), input.osuId(), input.discordId())
+                .map(GraphQlMapper::toDto);
+    }
+
+    @MutationMapping
     public Mono<GraphQlDtos.BidResultDto> placeBid(
             @Argument String auctionId,
             @Argument int amount,
