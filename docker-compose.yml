@@ -37,7 +37,14 @@ services:
       dockerfile: ./build.Dockerfile
     restart: always
     environment:
-      - SPRING_DATA_MONGODB_URI=mongodb://${MONGO_USERNAME:-root}:${MONGO_PASSWORD:?MONGO_PASSWORD is required}@aimcup-auction-mongo:27017/auction?authSource=admin
+      # Discrete Mongo properties (not a single URI) so passwords with reserved characters like '/'
+      # are URL-encoded by Spring Boot instead of corrupting a hand-built connection string.
+      - SPRING_DATA_MONGODB_HOST=aimcup-auction-mongo
+      - SPRING_DATA_MONGODB_PORT=27017
+      - SPRING_DATA_MONGODB_USERNAME=${MONGO_USERNAME:-root}
+      - SPRING_DATA_MONGODB_PASSWORD=${MONGO_PASSWORD:?MONGO_PASSWORD is required}
+      - SPRING_DATA_MONGODB_DATABASE=auction
+      - SPRING_DATA_MONGODB_AUTHENTICATION_DATABASE=admin
       - SPRING_DATA_REDIS_HOST=aimcup-auction-redis
       - SPRING_DATA_REDIS_PORT=6379
       # --- secrets / env-specific, injected by the deploy workflow or Portainer (never committed) ---
